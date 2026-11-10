@@ -8,7 +8,14 @@ import type {
   SuggestionsPayload,
   TiUser
 } from "../types";
-import { offlineDb, saveCachedSettings, saveCachedSuggestions, type SyncQueueEntry } from "./db";
+import {
+  belongsTo,
+  offlineDb,
+  saveCachedSettings,
+  saveCachedSuggestions,
+  type FailedOpEntry,
+  type SyncQueueEntry
+} from "./db";
 
 export interface SnapshotResponse {
   server_time: string;
@@ -31,6 +38,12 @@ export interface SyncBatchResponse {
   snapshot: SnapshotResponse;
 }
 
+export interface SyncCycleResult {
+  synced: number;
+  failed: number;
+  authExpired?: boolean;
+}
+
 export async function applySnapshotToLocalDb(snapshot: SnapshotResponse): Promise<void> {
   await offlineDb.transaction(
     "rw",
@@ -40,7 +53,8 @@ export async function applySnapshotToLocalDb(snapshot: SnapshotResponse): Promis
       offlineDb.sectors,
       offlineDb.locations,
       offlineDb.users,
-      offlineDb.meta
+      offlineDb.meta,
+      offlineDb.syncQueue
     ],
     async () => {
       await offlineDb.movements.clear();
@@ -73,25 +87,36 @@ export async function applySnapshotToLocalDb(snapshot: SnapshotResponse): Promis
       }
       await saveCachedSuggestions(snapshot.suggestions);
       await offlineDb.meta.put({ key: "lastSyncAt", value: snapshot.server_time });
+
+      // Operações ainda na fila (enfileiradas durante o envio, ou de outro usuário) continuam
+      // visíveis: o snapshot do servidor ainda não as contém.
+      const stillQueued = await offlineDb.syncQueue.orderBy("id").toArray();
+      for (const entry of stillQueued) {
+        if (!entry.optimistic) continue;
+        if (entry.optimistic.table === "movements") await offlineDb.movements.put(entry.optimistic.record);
+        else if (entry.optimistic.table === "equipments") await offlineDb.equipments.put(entry.optimistic.record);
+        else await offlineDb.sectors.put(entry.optimistic.record);
+      }
     }
   );
 }
 
-let activeSyncPromise: Promise<{ synced: number; conflicts: string[]; authExpired?: boolean }> | null = null;
+let activeSyncPromise: Promise<SyncCycleResult> | null = null;
 
-export async function runSyncCycle(): Promise<{
-  synced: number;
-  conflicts: string[];
-  authExpired?: boolean;
-}> {
+/**
+ * Envia a fila do usuário logado e atualiza o cache local.
+ * Operações recusadas (conflito/erro) NÃO são descartadas: vão para `failedOps`, onde a pessoa
+ * decide reaplicar ou descartar (Configurações → Sincronização).
+ */
+export async function runSyncCycle(userId: number): Promise<SyncCycleResult> {
   if (activeSyncPromise) {
     return activeSyncPromise;
   }
 
   activeSyncPromise = (async () => {
-    const queue = await offlineDb.syncQueue.orderBy("id").toArray();
-    const conflicts: string[] = [];
+    const queue = (await offlineDb.syncQueue.orderBy("id").toArray()).filter((q) => belongsTo(q, userId));
     let synced = 0;
+    let failed = 0;
 
     try {
       if (queue.length > 0) {
@@ -109,20 +134,31 @@ export async function runSyncCycle(): Promise<{
         });
 
         const processedIds: number[] = [];
+        const failures: FailedOpEntry[] = [];
+        const now = new Date().toISOString();
         for (const item of res.results) {
           const matched = queue.find((q) => q.op_id === item.op_id);
+          if (!matched || matched.id === undefined) continue;
+          processedIds.push(matched.id);
           if (item.status === "applied") {
             synced++;
-            if (matched?.id !== undefined) processedIds.push(matched.id);
           } else {
-            conflicts.push(item.error || "Erro de sincronização.");
-            if (matched?.id !== undefined) processedIds.push(matched.id);
+            failed++;
+            const { id: _id, ...rest } = matched;
+            failures.push({
+              ...rest,
+              failed_at: now,
+              status: item.status,
+              error: item.error || "Erro de sincronização.",
+              server_record: item.record
+            });
           }
         }
 
-        if (processedIds.length > 0) {
-          await offlineDb.syncQueue.bulkDelete(processedIds);
-        }
+        await offlineDb.transaction("rw", [offlineDb.syncQueue, offlineDb.failedOps], async () => {
+          if (failures.length > 0) await offlineDb.failedOps.bulkAdd(failures);
+          if (processedIds.length > 0) await offlineDb.syncQueue.bulkDelete(processedIds);
+        });
 
         await applySnapshotToLocalDb(res.snapshot);
       } else {
@@ -130,13 +166,13 @@ export async function runSyncCycle(): Promise<{
         await applySnapshotToLocalDb(snapshot);
       }
 
-      return { synced, conflicts };
+      return { synced, failed };
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
-        return { synced: 0, conflicts: [], authExpired: true };
+        return { synced: 0, failed: 0, authExpired: true };
       }
       if (isNetworkError(err)) {
-        return { synced: 0, conflicts: [] };
+        return { synced: 0, failed: 0 };
       }
       throw err;
     } finally {
@@ -157,6 +193,40 @@ export async function enqueueOfflineOperation(
   });
 }
 
-export async function getPendingSyncCount(): Promise<number> {
-  return offlineDb.syncQueue.count();
+export async function getPendingSyncCount(userId: number): Promise<number> {
+  return (await offlineDb.syncQueue.toArray()).filter((q) => belongsTo(q, userId)).length;
+}
+
+export async function listFailedOps(userId: number): Promise<FailedOpEntry[]> {
+  return (await offlineDb.failedOps.orderBy("failed_at").reverse().toArray()).filter((f) =>
+    belongsTo(f, userId)
+  );
+}
+
+/**
+ * Devolve uma operação recusada para a fila. Com `overwrite`, remove o expected_version para
+ * aplicar por cima da versão atual do servidor (a pessoa escolheu manter a alteração dela).
+ */
+export async function retryFailedOp(id: number, overwrite: boolean): Promise<void> {
+  const failedOp = await offlineDb.failedOps.get(id);
+  if (!failedOp) return;
+  const payload = { ...failedOp.payload };
+  if (overwrite) delete payload.expected_version;
+  await offlineDb.transaction("rw", [offlineDb.syncQueue, offlineDb.failedOps], async () => {
+    await offlineDb.syncQueue.add({
+      op_id: crypto.randomUUID(),
+      type: failedOp.type,
+      entity_id: failedOp.entity_id,
+      client_uuid: failedOp.client_uuid,
+      payload,
+      created_at: new Date().toISOString(),
+      user_id: failedOp.user_id,
+      optimistic: failedOp.optimistic
+    });
+    await offlineDb.failedOps.delete(id);
+  });
+}
+
+export async function discardFailedOp(id: number): Promise<void> {
+  await offlineDb.failedOps.delete(id);
 }

@@ -1,367 +1,441 @@
-import { Check, Clock, History, Pencil, Plus, Printer, X } from "lucide-react";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Check, Clock, History, Pencil, Plus, Printer, Undo2, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { EquipmentPicker, type EquipmentSelection } from "../components/EquipmentPicker";
 import { PageIntro } from "../components/PageIntro";
 import { findCatalogSector, SectorSelector } from "../components/SectorSelector";
 import { apiRequest } from "../services/api";
 import type {
   AuditLogItem,
-  CatalogLocation,
+  CatalogEquipment,
   CatalogSector,
   MovementItem,
   MovementType,
   SuggestionsPayload
 } from "../types";
+import {
+  daysOverdue,
+  formatDate,
+  formatDateTime,
+  isOverdue,
+  movementStatusLabel,
+  movementStatusStyle
+} from "../types/labels";
+
+type MovementPayload = {
+  movement_type: MovementType;
+  equipment_id: number | null;
+  equipment_name: string;
+  patrimony: string;
+  sector_id: number | null;
+  sector_name: string;
+  install_location: string;
+  received_by: string;
+  notes: string;
+  out_at?: string;
+  due_at?: string | null;
+};
 
 interface MovimentacoesPageProps {
   items: MovementItem[];
+  equipments: CatalogEquipment[];
   sectors: CatalogSector[];
-  locations: CatalogLocation[];
   suggestions: SuggestionsPayload;
-  onCreate: (payload: {
-    movement_type: MovementType;
-    equipment_id?: number | null;
-    equipment_name: string;
-    patrimony?: string;
-    sector_id?: number | null;
-    sector_name: string;
-    install_location: string;
-    received_by?: string;
-    notes?: string;
-    out_at: string;
-  }) => Promise<void>;
-  onUpdate: (
-    item: MovementItem,
-    patch: Partial<{
-      movement_type: MovementType;
-      equipment_id: number | null;
-      equipment_name: string;
-      patrimony: string;
-      sector_id: number | null;
-      sector_name: string;
-      install_location: string;
-      received_by: string;
-      notes: string;
-      out_at: string;
-    }>
-  ) => Promise<void>;
+  loanDefaultDays: number;
+  onCreate: (payload: MovementPayload) => Promise<void>;
+  onUpdate: (item: MovementItem, patch: Partial<MovementPayload>) => Promise<void>;
   onReturn: (item: MovementItem) => Promise<void>;
   onCreateSector: (payload: { name: string; is_default?: boolean }) => Promise<CatalogSector>;
-  onRefreshCatalogs: () => Promise<void>;
   onPrintSingle: (item: MovementItem) => void;
   onPrintList: (items: MovementItem[], title?: string) => void;
   onOpenAudit: (item: MovementItem) => void;
 }
 
-function getLocalDateInput(d = new Date()): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+// ---------- utilidades de data (campos locais <-> ISO) ----------
+const pad = (n: number) => String(n).padStart(2, "0");
+const localDate = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const localTime = (d = new Date()) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+
+function toIso(date: string, time: string): string | null {
+  const d = new Date(`${date}T${time || "00:00"}:00`);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-function getLocalTimeInput(d = new Date()): string {
-  const h = String(d.getHours()).padStart(2, "0");
-  const min = String(d.getMinutes()).padStart(2, "0");
-  return `${h}:${min}`;
+/** Prazo no fim do dia escolhido (23:59 local). */
+function dueDateToIso(date: string): string | null {
+  return date ? toIso(date, "23:59") : null;
 }
 
-function combineDateTimeToIso(dateStr: string, timeStr: string): string {
-  const combined = new Date(`${dateStr}T${timeStr}:00`);
-  if (Number.isNaN(combined.getTime())) {
-    return new Date().toISOString();
-  }
-  return combined.toISOString();
+function addDays(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return localDate(d);
 }
 
-function isoToLocalDate(iso: string): string {
+function isoToLocalDate(iso: string | null | undefined): string {
+  if (!iso) return "";
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? getLocalDateInput() : getLocalDateInput(d);
+  return Number.isNaN(d.getTime()) ? "" : localDate(d);
 }
 
-function isoToLocalTime(iso: string): string {
+function isoToLocalTime(iso: string | null | undefined): string {
+  if (!iso) return "";
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? getLocalTimeInput() : getLocalTimeInput(d);
+  return Number.isNaN(d.getTime()) ? "" : localTime(d);
 }
 
-function isSameLocalDay(iso: string, ref = new Date()): boolean {
-  const d = new Date(iso);
+function useDialog(open: boolean, onClose: () => void) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) d.showModal();
+    else if (!open && d.open) d.close();
+  }, [open]);
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    const handler = () => onClose();
+    d.addEventListener("close", handler);
+    return () => d.removeEventListener("close", handler);
+  }, [onClose]);
+  return ref;
+}
+
+// ---------- formulário compartilhado (nova movimentação e edição) ----------
+interface FormState {
+  autoNow: boolean;
+  outDate: string;
+  outTime: string;
+  equipment: EquipmentSelection;
+  sectorName: string;
+  installLocation: string;
+  receivedBy: string;
+  movementType: MovementType;
+  hasDue: boolean;
+  dueDate: string;
+  notes: string;
+}
+
+function emptyForm(defaultSector: string, loanDays: number): FormState {
+  const now = new Date();
+  return {
+    autoNow: true,
+    outDate: localDate(now),
+    outTime: localTime(now),
+    equipment: { equipment_id: null, equipment_name: "", patrimony: "" },
+    sectorName: defaultSector,
+    installLocation: "",
+    receivedBy: "",
+    movementType: "emprestimo",
+    hasDue: loanDays > 0,
+    dueDate: loanDays > 0 ? addDays(loanDays) : "",
+    notes: ""
+  };
+}
+
+function formFromMovement(m: MovementItem): FormState {
+  return {
+    autoNow: false,
+    outDate: isoToLocalDate(m.out_at),
+    outTime: isoToLocalTime(m.out_at),
+    equipment: { equipment_id: m.equipment_id, equipment_name: m.equipment_name, patrimony: m.patrimony },
+    sectorName: m.sector_name,
+    installLocation: m.install_location,
+    receivedBy: m.received_by,
+    movementType: m.movement_type,
+    hasDue: Boolean(m.due_at),
+    dueDate: isoToLocalDate(m.due_at),
+    notes: m.notes
+  };
+}
+
+interface MovementFormFieldsProps {
+  idPrefix: string;
+  form: FormState;
+  setForm: (f: FormState) => void;
+  equipments: CatalogEquipment[];
+  movements: MovementItem[];
+  sectors: CatalogSector[];
+  suggestions: SuggestionsPayload;
+  onCreateSector: MovimentacoesPageProps["onCreateSector"];
+  editingMovementId?: number;
+  allowAutoNow: boolean;
+}
+
+function MovementFormFields({
+  idPrefix,
+  form,
+  setForm,
+  equipments,
+  movements,
+  sectors,
+  suggestions,
+  onCreateSector,
+  editingMovementId,
+  allowAutoNow
+}: MovementFormFieldsProps) {
+  const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm({ ...form, [key]: value });
+
   return (
-    d.getFullYear() === ref.getFullYear() &&
-    d.getMonth() === ref.getMonth() &&
-    d.getDate() === ref.getDate()
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <fieldset className="sm:col-span-2">
+        <legend className="tw-label">Tipo de saída</legend>
+        <div className="flex flex-wrap gap-4 text-sm">
+          {(["emprestimo", "instalacao_fixa"] as const).map((type) => (
+            <label key={type} className="inline-flex items-center gap-2 cursor-pointer">
+              <input type="radio" name={`${idPrefix}-type`} checked={form.movementType === type} onChange={() => set("movementType", type)} />
+              <span>{type === "emprestimo" ? "Empréstimo" : "Instalação fixa"}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
+      <div className="sm:col-span-2">
+        <label htmlFor={`${idPrefix}-equip`} className="tw-label">
+          Equipamento <span aria-hidden="true">*</span>
+        </label>
+        <EquipmentPicker
+          id={`${idPrefix}-equip`}
+          equipments={equipments}
+          movements={movements}
+          value={form.equipment}
+          onChange={(equipment) => set("equipment", equipment)}
+          editingMovementId={editingMovementId}
+        />
+      </div>
+
+      <div>
+        <label htmlFor={`${idPrefix}-sector`} className="tw-label">
+          Setor de destino <span aria-hidden="true">*</span>
+        </label>
+        <SectorSelector
+          id={`${idPrefix}-sector`}
+          required
+          value={form.sectorName}
+          onChange={(name) => set("sectorName", name)}
+          sectors={sectors}
+          suggestedNames={suggestions.sectors.map((s) => s.name)}
+          onCreateSector={onCreateSector}
+        />
+      </div>
+
+      <div>
+        <label htmlFor={`${idPrefix}-local`} className="tw-label">
+          Local de instalação <span aria-hidden="true">*</span>
+        </label>
+        <input id={`${idPrefix}-local`} list={`${idPrefix}-local-list`} required value={form.installLocation} onChange={(e) => set("installLocation", e.target.value)} placeholder="Sala ou ambiente" className="tw-input" />
+        <datalist id={`${idPrefix}-local-list`}>
+          {suggestions.locations.map((loc) => <option key={loc} value={loc} />)}
+        </datalist>
+      </div>
+
+      <div>
+        <label htmlFor={`${idPrefix}-receiver`} className="tw-label">Recebido por</label>
+        <input id={`${idPrefix}-receiver`} list={`${idPrefix}-people`} value={form.receivedBy} onChange={(e) => set("receivedBy", e.target.value)} placeholder="Nome de quem recebeu" className="tw-input" />
+        <datalist id={`${idPrefix}-people`}>
+          {suggestions.people.map((p) => <option key={p} value={p} />)}
+        </datalist>
+      </div>
+
+      <div>
+        {form.movementType === "emprestimo" ? (
+          <>
+            <label htmlFor={`${idPrefix}-due`} className="tw-label">Prazo de devolução</label>
+            <input
+              id={`${idPrefix}-due`}
+              type="date"
+              value={form.hasDue ? form.dueDate : ""}
+              disabled={!form.hasDue}
+              min={form.autoNow ? localDate() : form.outDate}
+              required={form.hasDue}
+              onChange={(e) => set("dueDate", e.target.value)}
+              className="tw-input"
+            />
+            <label className="mt-1 inline-flex items-center gap-2 text-xs cursor-pointer">
+              <input type="checkbox" checked={!form.hasDue} onChange={(e) => setForm({ ...form, hasDue: !e.target.checked, dueDate: form.dueDate || addDays(7) })} />
+              <span>Sem prazo</span>
+            </label>
+          </>
+        ) : (
+          <p className="text-xs pt-6" style={{ color: "var(--text-muted)" }}>Instalação fixa não tem prazo de devolução.</p>
+        )}
+      </div>
+
+      <div className="sm:col-span-2 p-3 rounded-lg border space-y-2" style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}>
+        {allowAutoNow && (
+          <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
+            <input type="checkbox" checked={form.autoNow} onChange={(e) => set("autoNow", e.target.checked)} />
+            <span>Registrar com a data e hora atuais</span>
+          </label>
+        )}
+        {allowAutoNow && form.autoNow ? (
+          <div className="flex items-center gap-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
+            <Clock className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>A hora será definida pelo servidor no momento do registro.</span>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label htmlFor={`${idPrefix}-date`} className="tw-label">Data da saída</label>
+              <input id={`${idPrefix}-date`} type="date" required value={form.outDate} onChange={(e) => set("outDate", e.target.value)} className="tw-input" />
+            </div>
+            <div>
+              <label htmlFor={`${idPrefix}-time`} className="tw-label">Hora</label>
+              <input id={`${idPrefix}-time`} type="time" required value={form.outTime} onChange={(e) => set("outTime", e.target.value)} className="tw-input" />
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="sm:col-span-2">
+        <label htmlFor={`${idPrefix}-notes`} className="tw-label">Observações</label>
+        <textarea id={`${idPrefix}-notes`} value={form.notes} onChange={(e) => set("notes", e.target.value)} className="tw-textarea" />
+      </div>
+    </div>
   );
 }
 
+// ---------- página ----------
+type OpenFilter = "todos" | "emprestimos" | "atrasados" | "instalacoes";
+
 export function MovimentacoesPage({
   items,
+  equipments,
   sectors,
-  locations,
   suggestions,
+  loanDefaultDays,
   onCreate,
   onUpdate,
   onReturn,
   onCreateSector,
-  onRefreshCatalogs,
   onPrintSingle,
   onPrintList,
   onOpenAudit
 }: MovimentacoesPageProps) {
-  const [subTab, setSubTab] = useState<"operacao" | "historico" | "locais">("operacao");
-  const [historyView, setHistoryView] = useState<"registros" | "logs">("registros");
-
   const defaultSector =
     sectors.find((s) => s.active === 1 && s.is_default === 1)?.name ||
-    sectors.find((s) => s.active === 1)?.name ||
     suggestions.sectors.find((s) => s.is_default)?.name ||
     "";
 
-  const initializedSectorRef = useRef(Boolean(defaultSector));
-  const [autoNow, setAutoNow] = useState(true);
-  const [nowClock, setNowClock] = useState(() => new Date());
-  const [outDate, setOutDate] = useState(() => getLocalDateInput());
-  const [outTime, setOutTime] = useState(() => getLocalTimeInput());
-  const [equipmentId, setEquipmentId] = useState<number | null>(null);
-  const [equipmentName, setEquipmentName] = useState("");
-  const [patrimony, setPatrimony] = useState("");
-  const [sectorName, setSectorName] = useState(defaultSector);
-  const [installLocation, setInstallLocation] = useState("");
-  const [receivedBy, setReceivedBy] = useState("");
-  const [movementType, setMovementType] = useState<MovementType>("emprestimo");
-  const [notes, setNotes] = useState("");
+  const [tab, setTab] = useState<"abertos" | "historico" | "logs">("abertos");
+  const [openFilter, setOpenFilter] = useState<OpenFilter>("todos");
   const [search, setSearch] = useState("");
+  const [histStatus, setHistStatus] = useState<"all" | "ativo" | "devolvido" | "fixo">("all");
+  const [histSector, setHistSector] = useState("all");
+
+  const [creating, setCreating] = useState<FormState | null>(null);
+  const [editing, setEditing] = useState<{ item: MovementItem; form: FormState } | null>(null);
+  const [returning, setReturning] = useState<MovementItem | null>(null);
+  const [pendingSector, setPendingSector] = useState<{ mode: "create" | "edit"; name: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [pendingSectorConfirm, setPendingSectorConfirm] = useState<{
-    mode: "create" | "edit";
-    sectorName: string;
-  } | null>(null);
 
-  // History & Logs states
-  const [histSearch, setHistSearch] = useState("");
-  const [histStatusFilter, setHistStatusFilter] = useState<"all" | "ativo" | "devolvido" | "fixo">("all");
-  const [histSectorFilter, setHistSectorFilter] = useState<string>("all");
-  const [movementLogs, setMovementLogs] = useState<AuditLogItem[]>([]);
+  const [logs, setLogs] = useState<AuditLogItem[]>([]);
+  const [logsCursor, setLogsCursor] = useState<number | null>(null);
   const [loadingLogs, setLoadingLogs] = useState(false);
+  const [logsError, setLogsError] = useState<string | null>(null);
 
-  // Sectors & Locations state
-  const [newSectorName, setNewSectorName] = useState("");
-  const [newSectorDefault, setNewSectorDefault] = useState(false);
-  const [newLocationName, setNewLocationName] = useState("");
-  const [newLocationSectorId, setNewLocationSectorId] = useState<string>("");
-  const [catError, setCatError] = useState<string | null>(null);
+  const createRef = useDialog(Boolean(creating), () => setCreating(null));
+  const editRef = useDialog(Boolean(editing), () => setEditing(null));
+  const returnRef = useDialog(Boolean(returning), () => setReturning(null));
+  const sectorRef = useDialog(Boolean(pendingSector), () => setPendingSector(null));
 
-  const [editing, setEditing] = useState<
-    (MovementItem & { editDate: string; editTime: string }) | null
-  >(null);
-  const [editingSec, setEditingSec] = useState<CatalogSector | null>(null);
-  const [editingLoc, setEditingLoc] = useState<CatalogLocation | null>(null);
+  const openItems = items.filter((m) => m.status === "ativo" || m.status === "fixo");
+  const loans = openItems.filter((m) => m.status === "ativo");
+  const overdue = loans.filter((m) => isOverdue(m));
+  const installs = openItems.filter((m) => m.status === "fixo");
 
-  const editDialogRef = useRef<HTMLDialogElement>(null);
-  const secDialogRef = useRef<HTMLDialogElement>(null);
-  const locDialogRef = useRef<HTMLDialogElement>(null);
-  const submitSectorDialogRef = useRef<HTMLDialogElement>(null);
+  const matches = (m: MovementItem, q: string) =>
+    !q ||
+    [m.document_code, m.equipment_name, m.patrimony, m.sector_name, m.install_location, m.received_by, m.registered_by_name]
+      .join(" ")
+      .toLowerCase()
+      .includes(q);
 
-  useEffect(() => {
-    if (!autoNow) return;
-    const timer = window.setInterval(() => {
-      const current = new Date();
-      setNowClock(current);
-      setOutDate(getLocalDateInput(current));
-      setOutTime(getLocalTimeInput(current));
-    }, 15000);
-    return () => window.clearInterval(timer);
-  }, [autoNow]);
+  const q = search.trim().toLowerCase();
+  const filteredOpen = (openFilter === "emprestimos" ? loans : openFilter === "atrasados" ? overdue : openFilter === "instalacoes" ? installs : openItems)
+    .filter((m) => matches(m, q))
+    .sort((a, b) => Number(isOverdue(b)) - Number(isOverdue(a)) || b.out_at.localeCompare(a.out_at));
 
-  useEffect(() => {
-    if (!initializedSectorRef.current && defaultSector) {
-      initializedSectorRef.current = true;
-      setSectorName(defaultSector);
-    }
-  }, [defaultSector]);
-
-  useEffect(() => {
-    if (subTab === "historico" && historyView === "logs") {
-      let cancelled = false;
-      setLoadingLogs(true);
-      apiRequest<{ items: AuditLogItem[] }>("/api/audit?entity=movement&limit=250")
-        .then((res) => {
-          if (!cancelled) setMovementLogs(res.items);
-        })
-        .catch(() => {
-          // Offline
-        })
-        .finally(() => {
-          if (!cancelled) setLoadingLogs(false);
-        });
-      return () => {
-        cancelled = true;
-      };
-    }
-  }, [subTab, historyView]);
-
-  useEffect(() => {
-    const d = editDialogRef.current;
-    if (!d) return;
-    if (editing && !d.open) d.showModal();
-    else if (!editing && d.open) d.close();
-  }, [editing]);
-
-  useEffect(() => {
-    const d = secDialogRef.current;
-    if (!d) return;
-    if (editingSec && !d.open) d.showModal();
-    else if (!editingSec && d.open) d.close();
-  }, [editingSec]);
-
-  useEffect(() => {
-    const d = locDialogRef.current;
-    if (!d) return;
-    if (editingLoc && !d.open) d.showModal();
-    else if (!editingLoc && d.open) d.close();
-  }, [editingLoc]);
-
-  useEffect(() => {
-    const d = submitSectorDialogRef.current;
-    if (!d) return;
-    if (pendingSectorConfirm && !d.open) d.showModal();
-    else if (!pendingSectorConfirm && d.open) d.close();
-  }, [pendingSectorConfirm]);
-
-  useEffect(() => {
-    const bind = (ref: React.RefObject<HTMLDialogElement | null>, clear: () => void) => {
-      const d = ref.current;
-      if (!d) return () => {};
-      const onClose = () => {
-        d.returnValue = "";
-        clear();
-      };
-      d.addEventListener("close", onClose);
-      return () => d.removeEventListener("close", onClose);
-    };
-    const c1 = bind(editDialogRef, () => setEditing(null));
-    const c2 = bind(secDialogRef, () => setEditingSec(null));
-    const c3 = bind(locDialogRef, () => setEditingLoc(null));
-    const c4 = bind(submitSectorDialogRef, () => setPendingSectorConfirm(null));
-    return () => {
-      c1();
-      c2();
-      c3();
-      c4();
-    };
-  }, []);
-
-  const activeMovements = items.filter((m) => m.status === "ativo");
-  const returnedCount = items.filter((m) => m.status === "devolvido").length;
-  const fixedCount = items.filter((m) => m.status === "fixo").length;
-  const todayCount = items.filter((m) => isSameLocalDay(m.out_at)).length;
-
-  const filteredActive = activeMovements.filter((m) => {
-    if (!search.trim()) return true;
-    const q = search.toLowerCase();
-    return (
-      m.document_code.toLowerCase().includes(q) ||
-      m.equipment_name.toLowerCase().includes(q) ||
-      m.patrimony.toLowerCase().includes(q) ||
-      m.sector_name.toLowerCase().includes(q) ||
-      m.install_location.toLowerCase().includes(q) ||
-      m.received_by.toLowerCase().includes(q)
-    );
-  });
+  const sectorOptions = useMemo(
+    () => Array.from(new Set(items.map((m) => m.sector_name))).sort((a, b) => a.localeCompare(b, "pt-BR")),
+    [items]
+  );
 
   const filteredHistory = items.filter((m) => {
-    if (histStatusFilter !== "all" && m.status !== histStatusFilter) return false;
-    if (histSectorFilter !== "all" && m.sector_name !== histSectorFilter) return false;
-    if (!histSearch.trim()) return true;
-    const q = histSearch.toLowerCase();
-    return (
-      m.document_code.toLowerCase().includes(q) ||
-      m.equipment_name.toLowerCase().includes(q) ||
-      m.patrimony.toLowerCase().includes(q) ||
-      m.sector_name.toLowerCase().includes(q) ||
-      m.install_location.toLowerCase().includes(q) ||
-      m.received_by.toLowerCase().includes(q) ||
-      m.registered_by_name.toLowerCase().includes(q)
-    );
+    if (histStatus !== "all" && m.status !== histStatus) return false;
+    if (histSector !== "all") {
+      // Compara pelo id do setor quando existe (nomes mudam quando o setor é renomeado).
+      const sel = sectors.find((s) => s.name === histSector);
+      if (sel ? m.sector_id !== sel.id && m.sector_name !== histSector : m.sector_name !== histSector) return false;
+    }
+    return matches(m, q);
   });
 
-  const filteredLogs = movementLogs.filter((log) => {
-    if (!histSearch.trim()) return true;
-    const q = histSearch.toLowerCase();
-    return (
-      log.summary.toLowerCase().includes(q) ||
-      log.user_name.toLowerCase().includes(q) ||
-      log.action.toLowerCase().includes(q)
-    );
-  });
-
-  const handleEquipmentChange = (val: string) => {
-    setEquipmentName(val);
-    const match = suggestions.equipments.find(
-      (e) => e.name.toLowerCase() === val.trim().toLowerCase()
-    );
-    if (match) {
-      setEquipmentId(match.id);
-      if (match.patrimony) setPatrimony(match.patrimony);
-    } else {
-      setEquipmentId(null);
-    }
-  };
-
-  const handlePatrimonyChange = (val: string) => {
-    setPatrimony(val);
-    const trimmed = val.trim().toLowerCase();
-    if (!trimmed) return;
-    const match = suggestions.equipments.find(
-      (e) => e.patrimony && e.patrimony.toLowerCase() === trimmed
-    );
-    if (match) {
-      setEquipmentId(match.id);
-      setEquipmentName(match.name);
-    }
-  };
-
-  const handleToggleAutoNow = (checked: boolean) => {
-    setAutoNow(checked);
-    const current = new Date();
-    setNowClock(current);
-    setOutDate(getLocalDateInput(current));
-    setOutTime(getLocalTimeInput(current));
-  };
-
-  const executeCreate = async (resolvedSector: { id?: number | null; name: string }) => {
-    setError(null);
-    setSaving(true);
+  // ---------- logs paginados ----------
+  const loadLogs = async (reset: boolean) => {
+    setLoadingLogs(true);
+    setLogsError(null);
     try {
-      const exactNow = new Date();
-      const timestampIso = autoNow
-        ? exactNow.toISOString()
-        : combineDateTimeToIso(outDate, outTime);
+      const cursor = reset ? null : logsCursor;
+      const res = await apiRequest<{ items: AuditLogItem[]; next_before_id: number | null }>(
+        `/api/audit?entity=movement&limit=100${cursor ? `&before_id=${cursor}` : ""}`
+      );
+      setLogs((prev) => (reset ? res.items : [...prev, ...res.items]));
+      setLogsCursor(res.next_before_id);
+    } catch (err) {
+      setLogsError(err instanceof Error ? err.message : "Não foi possível carregar os registros (é preciso estar online).");
+    } finally {
+      setLoadingLogs(false);
+    }
+  };
 
-      await onCreate({
-        movement_type: movementType,
-        equipment_id: equipmentId,
-        equipment_name: equipmentName,
-        patrimony,
-        sector_id: resolvedSector.id && resolvedSector.id > 0 ? resolvedSector.id : null,
-        sector_name: resolvedSector.name,
-        install_location: installLocation.trim(),
-        received_by: receivedBy,
-        notes,
-        out_at: timestampIso
-      });
+  useEffect(() => {
+    if (tab === "logs") void loadLogs(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
-      const resetTime = new Date();
-      setNowClock(resetTime);
-      setOutDate(getLocalDateInput(resetTime));
-      setOutTime(getLocalTimeInput(resetTime));
-      setEquipmentId(null);
-      setEquipmentName("");
-      setPatrimony("");
-      setSectorName(defaultSector);
-      setInstallLocation("");
-      setReceivedBy("");
-      setMovementType("emprestimo");
-      setNotes("");
+  // ---------- salvar ----------
+  const buildPayload = (form: FormState, sector: { id: number | null; name: string }, isEdit: boolean): MovementPayload | string => {
+    if (!form.equipment.equipment_name.trim()) return "Escolha o equipamento.";
+    const payload: MovementPayload = {
+      movement_type: form.movementType,
+      equipment_id: form.equipment.equipment_id,
+      equipment_name: form.equipment.equipment_name,
+      patrimony: form.equipment.patrimony,
+      sector_id: sector.id && sector.id > 0 ? sector.id : null,
+      sector_name: sector.name,
+      install_location: form.installLocation.trim(),
+      received_by: form.receivedBy,
+      notes: form.notes
+    };
+    if (!form.autoNow || isEdit) {
+      const outAt = toIso(form.outDate, form.outTime);
+      if (!outAt) return "Data ou hora de saída inválida.";
+      payload.out_at = outAt;
+    }
+    if (form.movementType === "emprestimo") {
+      payload.due_at = form.hasDue ? dueDateToIso(form.dueDate) : null;
+      if (form.hasDue && !payload.due_at) return "Informe o prazo de devolução ou marque \"Sem prazo\".";
+    }
+    return payload;
+  };
+
+  const resolveSector = (name: string) => {
+    const trimmed = name.trim();
+    const match = findCatalogSector(sectors, trimmed);
+    return match ? { id: match.id, name: match.name } : trimmed ? null : { id: null, name: trimmed };
+  };
+
+  const submitCreate = async (sector: { id: number | null; name: string }) => {
+    if (!creating) return;
+    const payload = buildPayload(creating, sector, false);
+    if (typeof payload === "string") return setError(payload);
+    setSaving(true);
+    setError(null);
+    try {
+      await onCreate(payload);
+      setCreating(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao registrar movimentação.");
     } finally {
@@ -369,24 +443,14 @@ export function MovimentacoesPage({
     }
   };
 
-  const executeEditSave = async (
-    target: MovementItem & { editDate: string; editTime: string },
-    resolvedSector: { id?: number | null; name: string }
-  ) => {
-    setError(null);
+  const submitEdit = async (sector: { id: number | null; name: string }) => {
+    if (!editing) return;
+    const payload = buildPayload(editing.form, sector, true);
+    if (typeof payload === "string") return setError(payload);
     setSaving(true);
+    setError(null);
     try {
-      await onUpdate(target, {
-        movement_type: target.movement_type,
-        equipment_name: target.equipment_name,
-        patrimony: target.patrimony,
-        sector_id: resolvedSector.id && resolvedSector.id > 0 ? resolvedSector.id : null,
-        sector_name: resolvedSector.name,
-        install_location: target.install_location,
-        received_by: target.received_by,
-        notes: target.notes,
-        out_at: combineDateTimeToIso(target.editDate, target.editTime)
-      });
+      await onUpdate(editing.item, payload);
       setEditing(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro ao salvar alterações.");
@@ -395,1311 +459,430 @@ export function MovimentacoesPage({
     }
   };
 
-  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
+  const handleCreateSubmit = (e: FormEvent) => {
     e.preventDefault();
-    setError(null);
-    const trimmedSector = sectorName.trim();
-    const matchedCatalog = findCatalogSector(sectors, trimmedSector);
-    if (!matchedCatalog && trimmedSector) {
-      setPendingSectorConfirm({ mode: "create", sectorName: trimmedSector });
-      return;
-    }
-    await executeCreate({
-      id: matchedCatalog?.id ?? null,
-      name: matchedCatalog?.name ?? trimmedSector
-    });
+    if (!creating) return;
+    const sector = resolveSector(creating.sectorName);
+    if (!sector) return setPendingSector({ mode: "create", name: creating.sectorName.trim() });
+    void submitCreate(sector);
   };
 
-  const handleEditSave = async (e: FormEvent<HTMLFormElement>) => {
+  const handleEditSubmit = (e: FormEvent) => {
     e.preventDefault();
     if (!editing) return;
-    setError(null);
-    const trimmedSector = editing.sector_name.trim();
-    const matchedCatalog = findCatalogSector(sectors, trimmedSector);
-    if (!matchedCatalog && trimmedSector) {
-      setPendingSectorConfirm({ mode: "edit", sectorName: trimmedSector });
-      return;
-    }
-    await executeEditSave(editing, {
-      id: matchedCatalog?.id ?? null,
-      name: matchedCatalog?.name ?? trimmedSector
-    });
+    const sector = resolveSector(editing.form.sectorName);
+    if (!sector) return setPendingSector({ mode: "edit", name: editing.form.sectorName.trim() });
+    void submitEdit(sector);
   };
 
-  const handleConfirmPendingSubmitSector = async () => {
-    if (!pendingSectorConfirm) return;
+  const confirmNewSector = async () => {
+    if (!pendingSector) return;
+    const { mode, name } = pendingSector;
+    setPendingSector(null);
+    try {
+      const created = await onCreateSector({ name });
+      const sector = { id: created.id, name: created.name };
+      if (mode === "create") await submitCreate(sector);
+      else await submitEdit(sector);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao criar setor.");
+    }
+  };
+
+  const confirmReturn = async () => {
+    if (!returning) return;
     setSaving(true);
     setError(null);
     try {
-      const created = await onCreateSector({ name: pendingSectorConfirm.sectorName });
-      const { mode } = pendingSectorConfirm;
-      setPendingSectorConfirm(null);
-      if (mode === "create") {
-        await executeCreate({ id: created.id, name: created.name });
-      } else if (editing) {
-        await executeEditSave(editing, { id: created.id, name: created.name });
-      }
+      await onReturn(returning);
+      setReturning(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erro ao criar setor.");
+      setError(err instanceof Error ? err.message : "Erro ao registrar devolução.");
+    } finally {
       setSaving(false);
     }
   };
 
-  const handleAddSector = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setCatError(null);
-    try {
-      await onCreateSector({ name: newSectorName, is_default: newSectorDefault });
-      setNewSectorName("");
-      setNewSectorDefault(false);
-    } catch (err) {
-      setCatError(err instanceof Error ? err.message : "Erro ao cadastrar setor.");
-    }
+  const openCreate = () => {
+    setError(null);
+    setCreating(emptyForm(defaultSector, loanDefaultDays));
   };
 
-  const handlePromoteExistingSector = async (name: string) => {
-    setCatError(null);
-    try {
-      await onCreateSector({ name, is_default: false });
-    } catch (err) {
-      setCatError(err instanceof Error ? err.message : "Erro ao configurar setor.");
-    }
+  const openEdit = (m: MovementItem) => {
+    setError(null);
+    setEditing({ item: m, form: formFromMovement(m) });
   };
 
-  const handleAddLocation = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setCatError(null);
-    try {
-      await apiRequest("/api/catalogs/locations", {
-        method: "POST",
-        body: JSON.stringify({
-          name: newLocationName,
-          sector_id: newLocationSectorId ? Number(newLocationSectorId) : null
-        })
-      });
-      setNewLocationName("");
-      setNewLocationSectorId("");
-      await onRefreshCatalogs();
-    } catch (err) {
-      setCatError(err instanceof Error ? err.message : "Erro ao cadastrar local.");
-    }
-  };
+  const tabButton = (key: typeof tab, label: string) => (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={tab === key}
+      onClick={() => setTab(key)}
+      className="px-3.5 py-2 rounded-lg text-sm font-medium cursor-pointer"
+      style={tab === key ? { backgroundColor: "var(--brand)", color: "var(--brand-fg)" } : { color: "var(--text-muted)" }}
+    >
+      {label}
+    </button>
+  );
 
-  const handleSaveSecEdit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!editingSec) return;
-    setCatError(null);
-    try {
-      await apiRequest(`/api/catalogs/sectors/${editingSec.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          name: editingSec.name,
-          is_default: editingSec.is_default === 1,
-          active: editingSec.active === 1
-        })
-      });
-      setEditingSec(null);
-      await onRefreshCatalogs();
-    } catch (err) {
-      setCatError(err instanceof Error ? err.message : "Erro ao editar setor.");
-    }
-  };
+  const rowActions = (m: MovementItem) => (
+    <div className="flex flex-wrap justify-end gap-1.5">
+      <button type="button" className="tw-btn tw-btn-sm" onClick={() => onPrintSingle(m)} aria-label={`PDF de ${m.document_code}`}>
+        <Printer className="w-3.5 h-3.5" aria-hidden="true" /> PDF
+      </button>
+      <button type="button" className="tw-btn tw-btn-sm" onClick={() => openEdit(m)}>
+        <Pencil className="w-3.5 h-3.5" aria-hidden="true" /> Editar
+      </button>
+      {m.id > 0 && (
+        <button type="button" className="tw-btn tw-btn-sm" onClick={() => onOpenAudit(m)}>
+          <History className="w-3.5 h-3.5" aria-hidden="true" /> Logs
+        </button>
+      )}
+      {m.status === "ativo" && (
+        <button type="button" className="tw-btn tw-btn-sm tw-btn-ok" onClick={() => setReturning(m)}>
+          <Check className="w-3.5 h-3.5" aria-hidden="true" /> Registrar devolução
+        </button>
+      )}
+      {m.status === "fixo" && (
+        <button type="button" className="tw-btn tw-btn-sm" onClick={() => setReturning(m)}>
+          <Undo2 className="w-3.5 h-3.5" aria-hidden="true" /> Desfazer instalação
+        </button>
+      )}
+    </div>
+  );
 
-  const handleSaveLocEdit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    if (!editingLoc) return;
-    setCatError(null);
-    try {
-      await apiRequest(`/api/catalogs/locations/${editingLoc.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          name: editingLoc.name,
-          sector_id: editingLoc.sector_id,
-          active: editingLoc.active === 1
-        })
-      });
-      setEditingLoc(null);
-      await onRefreshCatalogs();
-    } catch (err) {
-      setCatError(err instanceof Error ? err.message : "Erro ao editar local.");
-    }
-  };
-
-  const sectorNamesForFilter = Array.from(new Set(items.map((m) => m.sector_name))).sort((a, b) =>
-    a.localeCompare(b, "pt-BR")
+  const errorBox = error && (
+    <div role="alert" className="px-3 py-2 rounded-lg text-sm border" style={{ backgroundColor: "var(--cin-red-soft)", borderColor: "var(--cin-red)", color: "var(--cin-red)" }}>
+      {error}
+    </div>
   );
 
   return (
     <div className="space-y-5">
       <PageIntro
         title="Movimentações"
-        purpose="Gerencia saídas, empréstimos, instalações fixas, devoluções, histórico completo e o cadastro de setores e locais."
+        purpose="Registra empréstimos e instalações fixas para outros setores, acompanha prazos e devoluções e mantém o histórico completo."
         howTo={[
-          "Em Registrar e Fora de, lance a saída de equipamentos, selecione ou crie setores e dê baixa na devolução.",
-          "Em Histórico e Logs, filtre movimentações anteriores, veja a trilha de auditoria e exporte relatórios em PDF.",
-          "Em Setores e Locais, configure os setores existentes (inclusive setor padrão) e associe locais de destino."
+          "Use \"Nova movimentação\", escolha o equipamento do catálogo e o setor de destino.",
+          "Em \"Em aberto\", acompanhe o que está fora e os atrasados, e registre a devolução.",
+          "Em \"Histórico\" e \"Registros\", consulte movimentações anteriores, a trilha de auditoria e exporte PDF."
         ]}
+        actions={
+          <button type="button" className="tw-btn tw-btn-primary" onClick={openCreate}>
+            <Plus className="w-4 h-4" aria-hidden="true" /> Nova movimentação
+          </button>
+        }
       />
 
-      {/* Sub-navigation bar inside Movimentações */}
-      <div
-        className="rounded-xl border p-3 flex flex-wrap items-center justify-between gap-3"
-        style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-      >
-        <div className="flex flex-wrap gap-1.5">
-          <button
-            type="button"
-            onClick={() => setSubTab("operacao")}
-            className="px-3.5 py-2 rounded-lg text-sm font-medium border cursor-pointer"
-            style={
-              subTab === "operacao"
-                ? { backgroundColor: "var(--brand)", color: "var(--brand-fg)", borderColor: "var(--brand)" }
-                : { borderColor: "var(--border)", color: "var(--text-muted)" }
-            }
-          >
-            Registrar e Fora de ({activeMovements.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setSubTab("historico")}
-            className="px-3.5 py-2 rounded-lg text-sm font-medium border cursor-pointer"
-            style={
-              subTab === "historico"
-                ? { backgroundColor: "var(--brand)", color: "var(--brand-fg)", borderColor: "var(--brand)" }
-                : { borderColor: "var(--border)", color: "var(--text-muted)" }
-            }
-          >
-            Histórico e Logs ({items.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setSubTab("locais")}
-            className="px-3.5 py-2 rounded-lg text-sm font-medium border cursor-pointer"
-            style={
-              subTab === "locais"
-                ? { backgroundColor: "var(--brand)", color: "var(--brand-fg)", borderColor: "var(--brand)" }
-                : { borderColor: "var(--border)", color: "var(--text-muted)" }
-            }
-          >
-            Setores e Locais
-          </button>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <button type="button" className="tw-stat text-left cursor-pointer" onClick={() => { setTab("abertos"); setOpenFilter("emprestimos"); }}>
+          <span className="tw-stat-label">Emprestados</span>
+          <strong style={{ color: "var(--brand)" }}>{loans.length}</strong>
+        </button>
+        <button type="button" className="tw-stat text-left cursor-pointer" onClick={() => { setTab("abertos"); setOpenFilter("atrasados"); }}>
+          <span className="tw-stat-label">Atrasados</span>
+          <strong style={{ color: overdue.length ? "var(--cin-red)" : undefined }}>{overdue.length}</strong>
+        </button>
+        <button type="button" className="tw-stat text-left cursor-pointer" onClick={() => { setTab("abertos"); setOpenFilter("instalacoes"); }}>
+          <span className="tw-stat-label">Instalações fixas</span>
+          <strong>{installs.length}</strong>
+        </button>
+        <div className="tw-stat">
+          <span className="tw-stat-label">Devolvidos</span>
+          <strong style={{ color: "var(--ok)" }}>{items.filter((m) => m.status === "devolvido").length}</strong>
         </div>
       </div>
 
-      {/* SUB-TAB 1: REGISTRAR, AMOSTRAGEM & FORA DE */}
-      {subTab === "operacao" && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-          {/* Form */}
-          <section
-            className="lg:col-span-5 rounded-xl border p-5 shadow-sm space-y-4"
-            style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-          >
-            <div className="border-b pb-3" style={{ borderColor: "var(--border)" }}>
-              <h2 className="text-base font-semibold">Registrar Movimentação</h2>
-            </div>
-
-            <form onSubmit={handleSubmit} className="space-y-3">
-              {/* Auto Date/Time Option + Manual Inputs */}
-              <div
-                className="p-3 rounded-lg border space-y-2.5"
-                style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}
-              >
-                <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={autoNow}
-                    onChange={(e) => handleToggleAutoNow(e.target.checked)}
-                  />
-                  <span>Usar data e hora atuais ao registrar</span>
-                </label>
-
-                {autoNow ? (
-                  <div className="flex items-center gap-1.5 text-xs" style={{ color: "var(--text-muted)" }}>
-                    <Clock className="w-3.5 h-3.5" aria-hidden="true" />
-                    <span>
-                      Será registrado com a hora atual ({getLocalDateInput(nowClock).split("-").reverse().join("/")}{" "}
-                      {getLocalTimeInput(nowClock)})
-                    </span>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label htmlFor="mov-date" className="block text-xs font-medium mb-1">
-                        Data <span aria-hidden="true">*</span>
-                      </label>
-                      <input
-                        id="mov-date"
-                        type="date"
-                        required
-                        value={outDate}
-                        onChange={(e) => setOutDate(e.target.value)}
-                        className="tw-input"
-                      />
-                    </div>
-                    <div>
-                      <label htmlFor="mov-time" className="block text-xs font-medium mb-1">
-                        Hora <span aria-hidden="true">*</span>
-                      </label>
-                      <input
-                        id="mov-time"
-                        type="time"
-                        required
-                        value={outTime}
-                        onChange={(e) => setOutTime(e.target.value)}
-                        className="tw-input"
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <label htmlFor="mov-equip" className="block text-xs font-medium mb-1">
-                  Equipamento <span aria-hidden="true">*</span>
-                </label>
-                <input
-                  id="mov-equip"
-                  list="mov-equip-list"
-                  required
-                  value={equipmentName}
-                  onChange={(e) => handleEquipmentChange(e.target.value)}
-                  placeholder="Nome ou seleção"
-                  className="tw-input"
-                />
-                <datalist id="mov-equip-list">
-                  {suggestions.equipments.map((eq, idx) => (
-                    <option key={`${eq.name}-${idx}`} value={eq.name}>
-                      {eq.patrimony || ""}
-                    </option>
-                  ))}
-                </datalist>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label htmlFor="mov-pat" className="block text-xs font-medium mb-1">
-                    Nº do patrimônio
-                  </label>
-                  <input
-                    id="mov-pat"
-                    list="mov-pat-list"
-                    value={patrimony}
-                    onChange={(e) => handlePatrimonyChange(e.target.value)}
-                    placeholder="PAT-0000"
-                    className="tw-input font-mono"
-                  />
-                  <datalist id="mov-pat-list">
-                    {suggestions.equipments
-                      .filter((eq) => eq.patrimony)
-                      .map((eq, idx) => (
-                        <option key={`${eq.patrimony}-${idx}`} value={eq.patrimony}>
-                          {eq.name}
-                        </option>
-                      ))}
-                  </datalist>
-                </div>
-
-                <div>
-                  <label htmlFor="mov-sector" className="block text-xs font-medium mb-1">
-                    Setor de destino <span aria-hidden="true">*</span>
-                  </label>
-                  <SectorSelector
-                    id="mov-sector"
-                    required
-                    value={sectorName}
-                    onChange={setSectorName}
-                    sectors={sectors}
-                    suggestedNames={suggestions.sectors.map((s) => s.name)}
-                    onCreateSector={onCreateSector}
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label htmlFor="mov-local" className="block text-xs font-medium mb-1">
-                    Local de instalação <span aria-hidden="true">*</span>
-                  </label>
-                  <input
-                    id="mov-local"
-                    list="mov-local-list"
-                    required
-                    value={installLocation}
-                    onChange={(e) => setInstallLocation(e.target.value)}
-                    placeholder="Sala ou ambiente"
-                    className="tw-input"
-                  />
-                  <datalist id="mov-local-list">
-                    {suggestions.locations.map((loc) => (
-                      <option key={loc} value={loc} />
-                    ))}
-                  </datalist>
-                </div>
-
-                <div>
-                  <label htmlFor="mov-receiver" className="block text-xs font-medium mb-1">
-                    Recebido por
-                  </label>
-                  <input
-                    id="mov-receiver"
-                    list="mov-people-list"
-                    value={receivedBy}
-                    onChange={(e) => setReceivedBy(e.target.value)}
-                    placeholder="Nome do recebedor"
-                    className="tw-input"
-                  />
-                  <datalist id="mov-people-list">
-                    {suggestions.people.map((p) => (
-                      <option key={p} value={p} />
-                    ))}
-                  </datalist>
-                </div>
-              </div>
-
-              <fieldset className="pt-1">
-                <legend className="text-xs font-medium mb-1.5">Tipo de saída</legend>
-                <div className="flex flex-wrap gap-4 text-sm">
-                  <label className="inline-flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="movement_type"
-                      value="emprestimo"
-                      checked={movementType === "emprestimo"}
-                      onChange={() => setMovementType("emprestimo")}
-                    />
-                    <span>Empréstimo</span>
-                  </label>
-                  <label className="inline-flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="movement_type"
-                      value="instalacao_fixa"
-                      checked={movementType === "instalacao_fixa"}
-                      onChange={() => setMovementType("instalacao_fixa")}
-                    />
-                    <span>Instalação fixa</span>
-                  </label>
-                </div>
-              </fieldset>
-
-              <div>
-                <label htmlFor="mov-notes" className="block text-xs font-medium mb-1">
-                  Observações
-                </label>
-                <input
-                  id="mov-notes"
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  className="tw-input"
-                />
-              </div>
-
-              {error && (
-                <div
-                  role="alert"
-                  className="px-3 py-2 rounded-lg text-sm border"
-                  style={{
-                    backgroundColor: "var(--cin-red-soft)",
-                    borderColor: "var(--cin-red)",
-                    color: "var(--cin-red)"
-                  }}
-                >
-                  {error}
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={saving}
-                className="w-full min-h-[44px] rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-60"
-                style={{ backgroundColor: "var(--brand)", color: "var(--brand-fg)" }}
-              >
-                {saving ? "Salvando..." : "Registrar saída"}
-              </button>
-            </form>
-          </section>
-
-          {/* Right Column: Amostragem + Fora de */}
-          <div className="lg:col-span-7 space-y-5">
-            {/* Área de Amostragem */}
-            <section
-              className="rounded-xl border p-5 shadow-sm space-y-3"
-              style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-            >
-              <div className="flex items-center justify-between border-b pb-2.5" style={{ borderColor: "var(--border)" }}>
-                <h2 className="text-base font-semibold">Amostragem de Movimentações</h2>
-                <button
-                  type="button"
-                  onClick={() => setSubTab("historico")}
-                  className="text-xs font-semibold cursor-pointer"
-                  style={{ color: "var(--brand)" }}
-                >
-                  Ver histórico completo
-                </button>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="p-3 rounded-lg border" style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}>
-                  <span className="text-xs" style={{ color: "var(--text-muted)" }}>Fora de</span>
-                  <div className="text-xl font-bold mt-0.5" style={{ color: "var(--brand)" }}>
-                    {activeMovements.length}
-                  </div>
-                </div>
-                <div className="p-3 rounded-lg border" style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}>
-                  <span className="text-xs" style={{ color: "var(--text-muted)" }}>Hoje</span>
-                  <div className="text-xl font-bold mt-0.5">{todayCount}</div>
-                </div>
-                <div className="p-3 rounded-lg border" style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}>
-                  <span className="text-xs" style={{ color: "var(--text-muted)" }}>Devoluções</span>
-                  <div className="text-xl font-bold mt-0.5" style={{ color: "var(--ok)" }}>
-                    {returnedCount}
-                  </div>
-                </div>
-                <div className="p-3 rounded-lg border" style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}>
-                  <span className="text-xs" style={{ color: "var(--text-muted)" }}>Instalações fixas</span>
-                  <div className="text-xl font-bold mt-0.5">{fixedCount}</div>
-                </div>
-              </div>
-
-              {items.length > 0 && (
-                <div className="space-y-1.5 pt-1">
-                  <span className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>
-                    Últimos registros
-                  </span>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {items.slice(0, 4).map((sample) => (
-                      <div
-                        key={sample.client_uuid}
-                        className="p-2.5 rounded-lg border text-xs flex items-center justify-between gap-2"
-                        style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}
-                      >
-                        <div className="min-w-0">
-                          <div className="font-semibold truncate">
-                            <span className="font-mono mr-1.5" style={{ color: "var(--text-muted)" }}>
-                              {sample.document_code}
-                            </span>
-                            {sample.equipment_name}
-                          </div>
-                          <div className="truncate" style={{ color: "var(--text-muted)" }}>
-                            {sample.sector_name} — {sample.install_location}
-                          </div>
-                        </div>
-                        <span
-                          className="px-2 py-0.5 rounded font-medium shrink-0"
-                          style={
-                            sample.status === "ativo"
-                              ? { backgroundColor: "var(--brand-soft)", color: "var(--brand)" }
-                              : sample.status === "devolvido"
-                                ? { backgroundColor: "var(--ok-soft)", color: "var(--ok)" }
-                                : { backgroundColor: "var(--surface-alt)", color: "var(--text-muted)" }
-                          }
-                        >
-                          {sample.status === "ativo"
-                            ? "Fora"
-                            : sample.status === "devolvido"
-                              ? "Devolvido"
-                              : "Fixo"}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </section>
-
-            {/* Seção Fora de */}
-            <section
-              className="rounded-xl border p-5 shadow-sm space-y-4"
-              style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-            >
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b pb-3" style={{ borderColor: "var(--border)" }}>
-                <h2 className="text-base font-semibold">Fora de ({activeMovements.length})</h2>
-                <search className="flex items-center gap-2">
-                  <input
-                    type="search"
-                    aria-label="Filtrar Fora de"
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Filtrar..."
-                    className="tw-input sm:w-52"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => onPrintList(filteredActive, "Equipamentos Fora de")}
-                    className="inline-flex items-center gap-1.5 min-h-[44px] px-3 rounded-lg text-xs font-medium border cursor-pointer shrink-0"
-                    style={{ borderColor: "var(--border)" }}
-                  >
-                    <Printer className="w-4 h-4" aria-hidden="true" />
-                    Gerar PDF
-                  </button>
-                </search>
-              </div>
-
-              {filteredActive.length === 0 ? (
-                <p className="text-sm py-3" style={{ color: "var(--text-muted)" }}>
-                  Nenhum equipamento aguardando devolução.
-                </p>
-              ) : (
-                <div className="space-y-3">
-                  {filteredActive.map((m) => (
-                    <article
-                      key={m.client_uuid}
-                      className="rounded-xl border p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                      style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}
-                    >
-                      <div className="space-y-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-mono text-xs" style={{ color: "var(--text-muted)" }}>
-                            {m.document_code}
-                          </span>
-                          <strong className="text-sm">{m.equipment_name}</strong>
-                          {m.patrimony && (
-                            <span
-                              className="font-mono text-xs px-2 py-0.5 rounded border"
-                              style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-                            >
-                              {m.patrimony}
-                            </span>
-                          )}
-                          {m._pendingSync && (
-                            <span className="text-xs font-semibold" style={{ color: "var(--warn)" }}>
-                              Pendente sync
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-xs flex flex-wrap gap-x-3 gap-y-1" style={{ color: "var(--text-muted)" }}>
-                          <span>
-                            <strong>Setor:</strong> {m.sector_name}
-                          </span>
-                          <span>
-                            <strong>Local:</strong> {m.install_location}
-                          </span>
-                          {m.received_by && (
-                            <span>
-                              <strong>Recebido por:</strong> {m.received_by}
-                            </span>
-                          )}
-                          <span>
-                            <strong>Saída:</strong> {new Date(m.out_at).toLocaleString("pt-BR")}
-                          </span>
-                          <span>
-                            <strong>TI:</strong> {m.registered_by_name}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-1.5 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => onPrintSingle(m)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border cursor-pointer"
-                          style={{ borderColor: "var(--border)" }}
-                        >
-                          <Printer className="w-3.5 h-3.5" aria-hidden="true" />
-                          PDF
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setEditing({
-                              ...m,
-                              editDate: isoToLocalDate(m.out_at),
-                              editTime: isoToLocalTime(m.out_at)
-                            })
-                          }
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border cursor-pointer"
-                          style={{ borderColor: "var(--border)" }}
-                        >
-                          <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
-                          Editar
-                        </button>
-                        {m.id > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => onOpenAudit(m)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border cursor-pointer"
-                            style={{ borderColor: "var(--border)" }}
-                          >
-                            <History className="w-3.5 h-3.5" aria-hidden="true" />
-                            Logs
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => void onReturn(m)}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer"
-                          style={{ backgroundColor: "var(--ok)", color: "#ffffff" }}
-                        >
-                          <Check className="w-3.5 h-3.5" aria-hidden="true" />
-                          Devolvido
-                        </button>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              )}
-            </section>
+      <section className="tw-card p-4 sm:p-5 space-y-4">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div role="tablist" aria-label="Visões de movimentações" className="flex flex-wrap gap-1">
+            {tabButton("abertos", `Em aberto (${openItems.length})`)}
+            {tabButton("historico", "Histórico")}
+            {tabButton("logs", "Registros")}
           </div>
+          {tab !== "logs" && (
+            <div className="flex flex-wrap items-center gap-2">
+              <input type="search" aria-label="Buscar movimentações" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar código, equipamento, setor..." className="tw-input sm:w-64" />
+              <button
+                type="button"
+                className="tw-btn"
+                onClick={() =>
+                  tab === "abertos"
+                    ? onPrintList(filteredOpen, "Movimentações em aberto")
+                    : onPrintList(filteredHistory, "Histórico de movimentações")
+                }
+              >
+                <Printer className="w-4 h-4" aria-hidden="true" /> PDF
+              </button>
+            </div>
+          )}
         </div>
-      )}
 
-      {/* SUB-TAB 2: HISTÓRICO E LOGS DE MOVIMENTAÇÃO */}
-      {subTab === "historico" && (
-        <section
-          className="rounded-xl border p-5 shadow-sm space-y-4"
-          style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-        >
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b pb-3" style={{ borderColor: "var(--border)" }}>
-            <div className="flex flex-wrap gap-1.5">
-              <button
-                type="button"
-                onClick={() => setHistoryView("registros")}
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer"
-                style={
-                  historyView === "registros"
-                    ? { backgroundColor: "var(--brand)", color: "var(--brand-fg)", borderColor: "var(--brand)" }
-                    : { borderColor: "var(--border)", color: "var(--text-muted)" }
-                }
-              >
-                Histórico de Movimentações ({filteredHistory.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setHistoryView("logs")}
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer"
-                style={
-                  historyView === "logs"
-                    ? { backgroundColor: "var(--brand)", color: "var(--brand-fg)", borderColor: "var(--brand)" }
-                    : { borderColor: "var(--border)", color: "var(--text-muted)" }
-                }
-              >
-                Logs de Movimentação
-              </button>
+        {tab === "abertos" && (
+          <>
+            <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filtrar em aberto">
+              {(
+                [
+                  ["todos", `Todos (${openItems.length})`],
+                  ["emprestimos", `Empréstimos (${loans.length})`],
+                  ["atrasados", `Atrasados (${overdue.length})`],
+                  ["instalacoes", `Instalações fixas (${installs.length})`]
+                ] as Array<[OpenFilter, string]>
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  aria-pressed={openFilter === key}
+                  onClick={() => setOpenFilter(key)}
+                  className="px-3 py-1.5 rounded-full text-xs font-semibold border cursor-pointer"
+                  style={openFilter === key ? { backgroundColor: "var(--brand-soft)", borderColor: "var(--brand)", color: "var(--brand)" } : { borderColor: "var(--border)", color: "var(--text-muted)" }}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
 
-            <search className="flex flex-wrap items-center gap-2">
-              <input
-                type="search"
-                aria-label="Filtrar histórico de movimentações"
-                value={histSearch}
-                onChange={(e) => setHistSearch(e.target.value)}
-                placeholder="Buscar código, equipamento, local..."
-                className="tw-input sm:w-56"
-              />
-              {historyView === "registros" && (
-                <>
-                  <select
-                    aria-label="Filtrar situação"
-                    value={histStatusFilter}
-                    onChange={(e) => setHistStatusFilter(e.target.value as typeof histStatusFilter)}
-                    className="tw-input sm:w-36"
-                  >
-                    <option value="all">Todas situações</option>
-                    <option value="ativo">Fora</option>
-                    <option value="devolvido">Devolvido</option>
-                    <option value="fixo">Instalação fixa</option>
-                  </select>
-                  <select
-                    aria-label="Filtrar setor"
-                    value={histSectorFilter}
-                    onChange={(e) => setHistSectorFilter(e.target.value)}
-                    className="tw-input sm:w-40"
-                  >
-                    <option value="all">Todos os setores</option>
-                    {sectorNamesForFilter.map((sec) => (
-                      <option key={sec} value={sec}>
-                        {sec}
-                      </option>
+            {filteredOpen.length === 0 ? (
+              <p className="text-sm py-6 text-center" style={{ color: "var(--text-muted)" }}>
+                {openItems.length === 0 ? "Nenhum equipamento fora no momento." : "Nada encontrado com esses filtros."}
+              </p>
+            ) : (
+              <div className="table-wrapper" role="region" aria-label="Movimentações em aberto" tabIndex={0}>
+                <table className="tw-table responsive-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Equipamento</th>
+                      <th scope="col">Setor / local</th>
+                      <th scope="col">Recebido por</th>
+                      <th scope="col">Saída</th>
+                      <th scope="col">Prazo</th>
+                      <th scope="col"><span className="sr-only">Ações</span></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredOpen.map((m) => (
+                      <tr key={m.client_uuid}>
+                        <td data-label="Equipamento">
+                          <div className="font-semibold">{m.equipment_name}</div>
+                          <div className="text-xs font-mono" style={{ color: "var(--text-muted)" }}>
+                            {m.document_code}
+                            {m.patrimony ? ` · ${m.patrimony}` : ""}
+                            {m._pendingSync && <span style={{ color: "var(--warn)" }}> · aguardando envio</span>}
+                          </div>
+                        </td>
+                        <td data-label="Setor / local">
+                          {m.sector_name}
+                          <div className="text-xs" style={{ color: "var(--text-muted)" }}>{m.install_location}</div>
+                        </td>
+                        <td data-label="Recebido por">{m.received_by || "-"}</td>
+                        <td data-label="Saída">
+                          {formatDateTime(m.out_at)}
+                          <div className="text-xs" style={{ color: "var(--text-muted)" }}>por {m.registered_by_name}</div>
+                        </td>
+                        <td data-label="Prazo">
+                          {m.status === "fixo" ? (
+                            <span className="tw-badge" style={movementStatusStyle(m)}>Instalação fixa</span>
+                          ) : m.due_at ? (
+                            <span className="tw-badge" style={movementStatusStyle(m)}>
+                              {isOverdue(m) ? `Atrasado ${daysOverdue(m) || ""}${daysOverdue(m) ? "d" : ""}`.trim() : `Até ${formatDate(m.due_at)}`}
+                            </span>
+                          ) : (
+                            <span className="text-xs" style={{ color: "var(--text-muted)" }}>Sem prazo</span>
+                          )}
+                        </td>
+                        <td>{rowActions(m)}</td>
+                      </tr>
                     ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => onPrintList(filteredHistory, "Histórico Completo de Movimentações")}
-                    className="inline-flex items-center gap-1.5 min-h-[44px] px-3.5 rounded-lg text-xs font-medium border cursor-pointer shrink-0"
-                    style={{ borderColor: "var(--border)" }}
-                  >
-                    <Printer className="w-4 h-4" aria-hidden="true" />
-                    Exportar PDF
-                  </button>
-                </>
-              )}
-            </search>
-          </div>
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
 
-          {historyView === "registros" && (
-            <div tabIndex={0} role="region" aria-label="Histórico completo de movimentações" className="table-wrapper">
-              <table className="responsive-table w-full text-sm border-collapse">
+        {tab === "historico" && (
+          <>
+            <div className="flex flex-wrap gap-2">
+              <select aria-label="Filtrar situação" value={histStatus} onChange={(e) => setHistStatus(e.target.value as typeof histStatus)} className="tw-input sm:w-44">
+                <option value="all">Todas as situações</option>
+                <option value="ativo">Emprestado</option>
+                <option value="devolvido">Devolvido</option>
+                <option value="fixo">Instalação fixa</option>
+              </select>
+              <select aria-label="Filtrar setor" value={histSector} onChange={(e) => setHistSector(e.target.value)} className="tw-input sm:w-52">
+                <option value="all">Todos os setores</option>
+                {sectorOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div className="table-wrapper" role="region" aria-label="Histórico de movimentações" tabIndex={0}>
+              <table className="tw-table responsive-table">
                 <thead>
-                  <tr className="border-b text-left text-xs" style={{ borderColor: "var(--border)", color: "var(--text-muted)" }}>
-                    <th scope="col" className="py-2 pr-3">Código</th>
-                    <th scope="col" className="py-2 pr-3">Equipamento</th>
-                    <th scope="col" className="py-2 pr-3">Setor / Local</th>
-                    <th scope="col" className="py-2 pr-3">Recebido por</th>
-                    <th scope="col" className="py-2 pr-3">Saída / TI</th>
-                    <th scope="col" className="py-2 pr-3">Situação</th>
-                    <th scope="col" className="py-2 text-right">Ações</th>
+                  <tr>
+                    <th scope="col">Código</th>
+                    <th scope="col">Equipamento</th>
+                    <th scope="col">Setor / local</th>
+                    <th scope="col">Saída</th>
+                    <th scope="col">Situação</th>
+                    <th scope="col"><span className="sr-only">Ações</span></th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredHistory.map((m) => (
-                    <tr key={m.client_uuid} className="border-b text-xs" style={{ borderColor: "var(--border)" }}>
-                      <td data-label="Código" className="py-2.5 pr-3 font-mono">{m.document_code}</td>
-                      <td data-label="Equipamento" className="py-2.5 pr-3">
+                    <tr key={m.client_uuid}>
+                      <td data-label="Código" className="font-mono text-xs">{m.document_code}</td>
+                      <td data-label="Equipamento">
                         <strong>{m.equipment_name}</strong>
-                        {m.patrimony ? ` (${m.patrimony})` : ""}
+                        {m.patrimony && <div className="text-xs font-mono" style={{ color: "var(--text-muted)" }}>{m.patrimony}</div>}
                       </td>
-                      <td data-label="Setor / Local" className="py-2.5 pr-3">
-                        {m.sector_name} — {m.install_location}
+                      <td data-label="Setor / local">
+                        {m.sector_name}
+                        <div className="text-xs" style={{ color: "var(--text-muted)" }}>{m.install_location}</div>
                       </td>
-                      <td data-label="Recebido por" className="py-2.5 pr-3">{m.received_by || "-"}</td>
-                      <td data-label="Saída / TI" className="py-2.5 pr-3">
-                        {new Date(m.out_at).toLocaleString("pt-BR")} ({m.registered_by_name})
+                      <td data-label="Saída">
+                        {formatDateTime(m.out_at)}
+                        <div className="text-xs" style={{ color: "var(--text-muted)" }}>por {m.registered_by_name}</div>
                       </td>
-                      <td data-label="Situação" className="py-2.5 pr-3">
-                        {m.status === "devolvido"
-                          ? `Devolvido em ${new Date(m.returned_at || m.updated_at).toLocaleString("pt-BR")} (${m.returned_to_name || "-"})`
-                          : m.status === "fixo"
-                            ? "Instalação fixa"
-                            : "Fora"}
-                      </td>
-                      <td className="py-2.5 text-right whitespace-nowrap space-x-1.5">
-                        <button
-                          type="button"
-                          onClick={() => onPrintSingle(m)}
-                          className="px-2.5 py-1 rounded border cursor-pointer"
-                          style={{ borderColor: "var(--border)" }}
-                        >
-                          PDF
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setEditing({
-                              ...m,
-                              editDate: isoToLocalDate(m.out_at),
-                              editTime: isoToLocalTime(m.out_at)
-                            })
-                          }
-                          className="px-2.5 py-1 rounded border cursor-pointer"
-                          style={{ borderColor: "var(--border)" }}
-                        >
-                          Editar
-                        </button>
-                        {m.id > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => onOpenAudit(m)}
-                            className="px-2.5 py-1 rounded border cursor-pointer"
-                            style={{ borderColor: "var(--border)" }}
-                          >
-                            Logs
-                          </button>
+                      <td data-label="Situação">
+                        <span className="tw-badge" style={movementStatusStyle(m)}>{movementStatusLabel(m)}</span>
+                        {m.status === "devolvido" && (
+                          <div className="text-xs" style={{ color: "var(--text-muted)" }}>
+                            {formatDateTime(m.returned_at)} · {m.returned_to_name || "-"}
+                          </div>
                         )}
                       </td>
+                      <td>{rowActions(m)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
               {filteredHistory.length === 0 && (
-                <p className="text-sm py-4" style={{ color: "var(--text-muted)" }}>
-                  Nenhuma movimentação encontrada.
-                </p>
+                <p className="text-sm py-6 text-center" style={{ color: "var(--text-muted)" }}>Nenhuma movimentação encontrada.</p>
               )}
             </div>
-          )}
+          </>
+        )}
 
-          {historyView === "logs" && (
-            <div className="space-y-2.5">
-              {loadingLogs && <p className="text-sm" style={{ color: "var(--text-muted)" }}>Carregando logs...</p>}
-              {!loadingLogs && filteredLogs.length === 0 && (
-                <p className="text-sm" style={{ color: "var(--text-muted)" }}>Nenhum log de movimentação encontrado.</p>
-              )}
-              {filteredLogs.map((log) => (
-                <div
-                  key={log.id}
-                  className="p-3 rounded-lg border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2"
-                  style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}
-                >
+        {tab === "logs" && (
+          <div className="space-y-2">
+            {logsError && <p className="text-sm" style={{ color: "var(--warn)" }}>{logsError}</p>}
+            {!loadingLogs && !logsError && logs.length === 0 && (
+              <p className="text-sm" style={{ color: "var(--text-muted)" }}>Nenhum registro de movimentação.</p>
+            )}
+            <ul className="space-y-2">
+              {logs.map((log) => (
+                <li key={log.id} className="tw-card p-3 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2" style={{ backgroundColor: "var(--bg)" }}>
                   <div className="space-y-0.5">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span
-                        className="px-2 py-0.5 rounded font-semibold"
-                        style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand)" }}
-                      >
-                        {log.action}
-                      </span>
+                      <span className="tw-badge" style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand)" }}>{log.action}</span>
                       <strong>{log.user_name}</strong>
-                      {log.entity_id && (
-                        <span style={{ color: "var(--text-muted)" }}>Movimento #{log.entity_id}</span>
-                      )}
                     </div>
                     <p className="text-sm">{log.summary}</p>
                   </div>
-                  <span className="shrink-0" style={{ color: "var(--text-muted)" }}>
-                    {new Date(log.created_at).toLocaleString("pt-BR")}
-                  </span>
-                </div>
+                  <span className="shrink-0" style={{ color: "var(--text-muted)" }}>{formatDateTime(log.created_at)}</span>
+                </li>
               ))}
-            </div>
-          )}
-        </section>
-      )}
-
-      {/* SUB-TAB 3: SETORES E LOCAIS INTEGRADOS À MOVIMENTAÇÃO */}
-      {subTab === "locais" && (
-        <div className="space-y-4">
-          {catError && (
-            <div
-              role="alert"
-              className="px-4 py-2.5 rounded-lg border text-sm"
-              style={{
-                backgroundColor: "var(--cin-red-soft)",
-                borderColor: "var(--cin-red)",
-                color: "var(--cin-red)"
-              }}
-            >
-              {catError}
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            <section
-              className="rounded-xl border p-5 shadow-sm space-y-4"
-              style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-            >
-              <div className="border-b pb-3" style={{ borderColor: "var(--border)" }}>
-                <h2 className="text-base font-semibold">Setores de Destino</h2>
-              </div>
-
-              <form onSubmit={handleAddSector} className="space-y-2.5">
-                <div className="flex gap-2">
-                  <input
-                    aria-label="Nome do setor"
-                    required
-                    value={newSectorName}
-                    onChange={(e) => setNewSectorName(e.target.value)}
-                    placeholder="Nome do setor"
-                    className="tw-input flex-1"
-                  />
-                  <button
-                    type="submit"
-                    className="min-h-[44px] px-4 rounded-lg text-sm font-semibold cursor-pointer shrink-0"
-                    style={{ backgroundColor: "var(--brand)", color: "var(--brand-fg)" }}
-                  >
-                    Adicionar
-                  </button>
-                </div>
-                <label className="inline-flex items-center gap-2 text-xs cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={newSectorDefault}
-                    onChange={(e) => setNewSectorDefault(e.target.checked)}
-                  />
-                  <span>Definir como setor padrão nas movimentações</span>
-                </label>
-              </form>
-
-              <div className="space-y-2">
-                {sectors.map((sec) => (
-                  <div
-                    key={sec.id}
-                    className="px-3 py-2 rounded-lg border flex items-center justify-between gap-2 text-xs"
-                    style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}
-                  >
-                    <div className="flex items-center gap-2">
-                      <strong className="text-sm">{sec.name}</strong>
-                      {sec.is_default === 1 && (
-                        <span
-                          className="px-2 py-0.5 rounded font-semibold"
-                          style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand)" }}
-                        >
-                          Padrão
-                        </span>
-                      )}
-                      {sec.active === 0 && <span style={{ color: "var(--cin-red)" }}>Inativo</span>}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setEditingSec({ ...sec })}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded border cursor-pointer"
-                      style={{ borderColor: "var(--border)" }}
-                    >
-                      <Pencil className="w-3 h-3" aria-hidden="true" />
-                      Editar
-                    </button>
-                  </div>
-                ))}
-                {sectors.length === 0 && (
-                  <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-                    Nenhum setor cadastrado.
-                  </p>
-                )}
-              </div>
-
-              {suggestions.sectors.some((s) => s.id === null) && (
-                <div
-                  className="pt-3 border-t space-y-2"
-                  style={{ borderColor: "var(--border)" }}
-                >
-                  <div className="text-xs font-semibold" style={{ color: "var(--text-muted)" }}>
-                    Setores usados em movimentações ainda não configurados no catálogo
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {suggestions.sectors
-                      .filter((s) => s.id === null)
-                      .map((sec) => (
-                        <button
-                          key={sec.name}
-                          type="button"
-                          onClick={() => handlePromoteExistingSector(sec.name)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium cursor-pointer"
-                          style={{
-                            backgroundColor: "var(--bg)",
-                            borderColor: "var(--border)"
-                          }}
-                        >
-                          <Plus className="w-3.5 h-3.5" aria-hidden="true" />
-                          <span>Cadastrar &ldquo;{sec.name}&rdquo;</span>
-                        </button>
-                      ))}
-                  </div>
-                </div>
-              )}
-            </section>
-
-            <section
-              className="rounded-xl border p-5 shadow-sm space-y-4"
-              style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-            >
-              <div className="border-b pb-3" style={{ borderColor: "var(--border)" }}>
-                <h2 className="text-base font-semibold">Locais de Movimentação</h2>
-              </div>
-
-              <form onSubmit={handleAddLocation} className="space-y-2.5">
-                <div className="flex gap-2">
-                  <input
-                    aria-label="Nome do local"
-                    required
-                    value={newLocationName}
-                    onChange={(e) => setNewLocationName(e.target.value)}
-                    placeholder="Ex: Sala 104, Auditório..."
-                    className="tw-input flex-1"
-                  />
-                  <button
-                    type="submit"
-                    className="min-h-[44px] px-4 rounded-lg text-sm font-semibold cursor-pointer shrink-0"
-                    style={{ backgroundColor: "var(--brand)", color: "var(--brand-fg)" }}
-                  >
-                    Adicionar
-                  </button>
-                </div>
-                <select
-                  aria-label="Setor associado"
-                  value={newLocationSectorId}
-                  onChange={(e) => setNewLocationSectorId(e.target.value)}
-                  className="tw-input"
-                >
-                  <option value="">Sem vínculo específico com setor</option>
-                  {sectors
-                    .filter((s) => s.active === 1)
-                    .map((s) => (
-                      <option key={s.id} value={s.id}>
-                        Setor: {s.name}
-                      </option>
-                    ))}
-                </select>
-              </form>
-
-              <div className="space-y-2 max-h-72 overflow-auto">
-                {locations.map((loc) => {
-                  const linkedSector = sectors.find((s) => s.id === loc.sector_id);
-                  return (
-                    <div
-                      key={loc.id}
-                      className="px-3 py-2 rounded-lg border flex items-center justify-between gap-2 text-xs"
-                      style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}
-                    >
-                      <div>
-                        <strong className="text-sm">{loc.name}</strong>
-                        <div className="flex items-center gap-2" style={{ color: "var(--text-muted)" }}>
-                          {linkedSector && <span>Setor: {linkedSector.name}</span>}
-                          {loc.active === 0 && <span style={{ color: "var(--cin-red)" }}>Inativo</span>}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setEditingLoc({ ...loc })}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded border cursor-pointer"
-                        style={{ borderColor: "var(--border)" }}
-                      >
-                        <Pencil className="w-3 h-3" aria-hidden="true" />
-                        Editar
-                      </button>
-                    </div>
-                  );
-                })}
-                {locations.length === 0 && (
-                  <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-                    Nenhum local cadastrado.
-                  </p>
-                )}
-              </div>
-            </section>
+            </ul>
+            {logsCursor && (
+              <button type="button" className="tw-btn" disabled={loadingLogs} onClick={() => void loadLogs(false)}>
+                {loadingLogs ? "Carregando..." : "Carregar mais"}
+              </button>
+            )}
+            {loadingLogs && logs.length === 0 && <p className="text-sm" style={{ color: "var(--text-muted)" }}>Carregando...</p>}
           </div>
-        </div>
-      )}
+        )}
+      </section>
 
-      {/* Edit Movement Dialog */}
-      <dialog
-        ref={editDialogRef}
-        aria-labelledby="edit-mov-title"
-        className="m-auto w-[min(94vw,620px)] rounded-xl p-0 overflow-auto shadow-xl"
-      >
-        {editing && (
-          <form onSubmit={handleEditSave} className="p-5 space-y-4">
+      {/* Nova movimentação */}
+      <dialog ref={createRef} aria-labelledby="new-mov-title" className="m-auto w-[min(96vw,680px)] max-h-[92vh] rounded-xl p-0 overflow-auto shadow-xl">
+        {creating && (
+          <form onSubmit={handleCreateSubmit} className="p-5 space-y-4">
             <div className="flex items-center justify-between border-b pb-3" style={{ borderColor: "var(--border)" }}>
-              <h2 id="edit-mov-title" className="text-base font-semibold">
-                Editar {editing.document_code}
-              </h2>
-              <button
-                type="button"
-                aria-label="Fechar"
-                onClick={() => setEditing(null)}
-                className="p-1.5 rounded-lg border cursor-pointer"
-                style={{ borderColor: "var(--border)" }}
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <h2 id="new-mov-title" className="text-base font-semibold">Nova movimentação</h2>
+              <button type="button" aria-label="Fechar" className="tw-btn tw-btn-sm" onClick={() => setCreating(null)}><X className="w-4 h-4" /></button>
             </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium mb-1">Data</label>
-                <input
-                  type="date"
-                  required
-                  value={editing.editDate}
-                  onChange={(e) => setEditing({ ...editing, editDate: e.target.value })}
-                  className="tw-input"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium mb-1">Hora</label>
-                <input
-                  type="time"
-                  required
-                  value={editing.editTime}
-                  onChange={(e) => setEditing({ ...editing, editTime: e.target.value })}
-                  className="tw-input"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium mb-1">Equipamento</label>
-                <input
-                  required
-                  value={editing.equipment_name}
-                  onChange={(e) => setEditing({ ...editing, equipment_name: e.target.value })}
-                  className="tw-input"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium mb-1">Nº do patrimônio</label>
-                <input
-                  value={editing.patrimony}
-                  onChange={(e) => setEditing({ ...editing, patrimony: e.target.value })}
-                  className="tw-input font-mono"
-                />
-              </div>
-              <div>
-                <label htmlFor="edit-mov-sector" className="block text-xs font-medium mb-1">
-                  Setor
-                </label>
-                <SectorSelector
-                  id="edit-mov-sector"
-                  required
-                  value={editing.sector_name}
-                  onChange={(nextName) => setEditing({ ...editing, sector_name: nextName })}
-                  sectors={sectors}
-                  suggestedNames={suggestions.sectors.map((s) => s.name)}
-                  onCreateSector={onCreateSector}
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium mb-1">Local de instalação</label>
-                <input
-                  required
-                  value={editing.install_location}
-                  onChange={(e) => setEditing({ ...editing, install_location: e.target.value })}
-                  className="tw-input"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium mb-1">Recebido por</label>
-                <input
-                  value={editing.received_by}
-                  onChange={(e) => setEditing({ ...editing, received_by: e.target.value })}
-                  className="tw-input"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium mb-1">Tipo</label>
-                <select
-                  value={editing.movement_type}
-                  onChange={(e) =>
-                    setEditing({ ...editing, movement_type: e.target.value as MovementType })
-                  }
-                  className="tw-input"
-                >
-                  <option value="emprestimo">Empréstimo</option>
-                  <option value="instalacao_fixa">Instalação fixa</option>
-                </select>
-              </div>
-              <div className="sm:col-span-2">
-                <label className="block text-xs font-medium mb-1">Observações</label>
-                <textarea
-                  value={editing.notes}
-                  onChange={(e) => setEditing({ ...editing, notes: e.target.value })}
-                  className="tw-textarea"
-                />
-              </div>
-            </div>
-
+            <MovementFormFields
+              idPrefix="new-mov"
+              form={creating}
+              setForm={setCreating}
+              equipments={equipments}
+              movements={items}
+              sectors={sectors}
+              suggestions={suggestions}
+              onCreateSector={onCreateSector}
+              allowAutoNow
+            />
+            {errorBox}
             <div className="flex justify-end gap-2 pt-2 border-t" style={{ borderColor: "var(--border)" }}>
-              <button
-                type="button"
-                onClick={() => setEditing(null)}
-                className="px-4 py-2 rounded-lg text-sm border cursor-pointer"
-                style={{ borderColor: "var(--border)" }}
-              >
-                Cancelar
-              </button>
-              <button
-                type="submit"
-                disabled={saving}
-                className="px-4 py-2 rounded-lg text-sm font-semibold cursor-pointer"
-                style={{ backgroundColor: "var(--brand)", color: "var(--brand-fg)" }}
-              >
-                Salvar alterações
-              </button>
+              <button type="button" className="tw-btn" onClick={() => setCreating(null)}>Cancelar</button>
+              <button type="submit" className="tw-btn tw-btn-primary" disabled={saving}>{saving ? "Salvando..." : "Registrar saída"}</button>
             </div>
           </form>
         )}
       </dialog>
 
-      {/* Edit Sector Dialog */}
-      <dialog ref={secDialogRef} aria-labelledby="edit-sec-title" className="m-auto w-[min(94vw,420px)] rounded-xl p-5 shadow-xl">
-        {editingSec && (
-          <form onSubmit={handleSaveSecEdit} className="space-y-3">
-            <div className="flex items-center justify-between border-b pb-2" style={{ borderColor: "var(--border)" }}>
-              <h3 id="edit-sec-title" className="text-sm font-semibold">Editar Setor</h3>
-              <button type="button" aria-label="Fechar" onClick={() => setEditingSec(null)} className="p-1 rounded border cursor-pointer" style={{ borderColor: "var(--border)" }}>
-                <X className="w-4 h-4" />
-              </button>
+      {/* Edição */}
+      <dialog ref={editRef} aria-labelledby="edit-mov-title" className="m-auto w-[min(96vw,680px)] max-h-[92vh] rounded-xl p-0 overflow-auto shadow-xl">
+        {editing && (
+          <form onSubmit={handleEditSubmit} className="p-5 space-y-4">
+            <div className="flex items-center justify-between border-b pb-3" style={{ borderColor: "var(--border)" }}>
+              <h2 id="edit-mov-title" className="text-base font-semibold">Editar {editing.item.document_code}</h2>
+              <button type="button" aria-label="Fechar" className="tw-btn tw-btn-sm" onClick={() => setEditing(null)}><X className="w-4 h-4" /></button>
             </div>
-            <div>
-              <label className="block text-xs font-medium mb-1">Nome</label>
-              <input required value={editingSec.name} onChange={(e) => setEditingSec({ ...editingSec, name: e.target.value })} className="tw-input" />
-            </div>
-            <label className="flex items-center gap-2 text-xs cursor-pointer">
-              <input type="checkbox" checked={editingSec.is_default === 1} onChange={(e) => setEditingSec({ ...editingSec, is_default: e.target.checked ? 1 : 0 })} />
-              <span>Setor padrão</span>
-            </label>
-            <label className="flex items-center gap-2 text-xs cursor-pointer">
-              <input type="checkbox" checked={editingSec.active === 1} onChange={(e) => setEditingSec({ ...editingSec, active: e.target.checked ? 1 : 0 })} />
-              <span>Ativo</span>
-            </label>
-            <div className="flex justify-end gap-2 pt-2">
-              <button type="button" onClick={() => setEditingSec(null)} className="px-3 py-1.5 rounded-lg text-xs border cursor-pointer" style={{ borderColor: "var(--border)" }}>Cancelar</button>
-              <button type="submit" className="px-4 py-1.5 rounded-lg text-xs font-semibold cursor-pointer" style={{ backgroundColor: "var(--brand)", color: "var(--brand-fg)" }}>Salvar</button>
-            </div>
-          </form>
-        )}
-      </dialog>
-
-      {/* Edit Location Dialog */}
-      <dialog ref={locDialogRef} aria-labelledby="edit-loc-title" className="m-auto w-[min(94vw,420px)] rounded-xl p-5 shadow-xl">
-        {editingLoc && (
-          <form onSubmit={handleSaveLocEdit} className="space-y-3">
-            <div className="flex items-center justify-between border-b pb-2" style={{ borderColor: "var(--border)" }}>
-              <h3 id="edit-loc-title" className="text-sm font-semibold">Editar Local</h3>
-              <button type="button" aria-label="Fechar" onClick={() => setEditingLoc(null)} className="p-1 rounded border cursor-pointer" style={{ borderColor: "var(--border)" }}>
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div>
-              <label className="block text-xs font-medium mb-1">Nome</label>
-              <input required value={editingLoc.name} onChange={(e) => setEditingLoc({ ...editingLoc, name: e.target.value })} className="tw-input" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium mb-1">Setor associado</label>
-              <select
-                value={editingLoc.sector_id ?? ""}
-                onChange={(e) =>
-                  setEditingLoc({ ...editingLoc, sector_id: e.target.value ? Number(e.target.value) : null })
-                }
-                className="tw-input"
-              >
-                <option value="">Sem vínculo específico</option>
-                {sectors.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
-            </div>
-            <label className="flex items-center gap-2 text-xs cursor-pointer">
-              <input type="checkbox" checked={editingLoc.active === 1} onChange={(e) => setEditingLoc({ ...editingLoc, active: e.target.checked ? 1 : 0 })} />
-              <span>Ativo</span>
-            </label>
-            <div className="flex justify-end gap-2 pt-2">
-              <button type="button" onClick={() => setEditingLoc(null)} className="px-3 py-1.5 rounded-lg text-xs border cursor-pointer" style={{ borderColor: "var(--border)" }}>Cancelar</button>
-              <button type="submit" className="px-4 py-1.5 rounded-lg text-xs font-semibold cursor-pointer" style={{ backgroundColor: "var(--brand)", color: "var(--brand-fg)" }}>Salvar</button>
+            <MovementFormFields
+              idPrefix="edit-mov"
+              form={editing.form}
+              setForm={(form) => setEditing({ ...editing, form })}
+              equipments={equipments}
+              movements={items}
+              sectors={sectors}
+              suggestions={suggestions}
+              onCreateSector={onCreateSector}
+              editingMovementId={editing.item.id}
+              allowAutoNow={false}
+            />
+            {errorBox}
+            <div className="flex justify-end gap-2 pt-2 border-t" style={{ borderColor: "var(--border)" }}>
+              <button type="button" className="tw-btn" onClick={() => setEditing(null)}>Cancelar</button>
+              <button type="submit" className="tw-btn tw-btn-primary" disabled={saving}>{saving ? "Salvando..." : "Salvar alterações"}</button>
             </div>
           </form>
         )}
       </dialog>
 
-      {/* Confirm new sector creation when submitting movement with manual uncatalogued sector */}
-      <dialog
-        ref={submitSectorDialogRef}
-        aria-labelledby="submit-sec-confirm-title"
-        className="m-auto w-[min(94vw,430px)] rounded-xl p-5 shadow-xl"
-      >
-        {pendingSectorConfirm && (
+      {/* Confirmação de devolução / desfazer instalação */}
+      <dialog ref={returnRef} aria-labelledby="return-title" className="m-auto w-[min(94vw,440px)] rounded-xl p-5 shadow-xl">
+        {returning && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between border-b pb-2" style={{ borderColor: "var(--border)" }}>
-              <h3 id="submit-sec-confirm-title" className="text-sm font-semibold">
-                Confirmar criação de setor
-              </h3>
-              <button
-                type="button"
-                aria-label="Fechar"
-                onClick={() => setPendingSectorConfirm(null)}
-                className="p-1 rounded border cursor-pointer"
-                style={{ borderColor: "var(--border)" }}
-              >
-                <X className="w-4 h-4" />
+            <h2 id="return-title" className="text-base font-semibold">
+              {returning.status === "fixo" ? "Desfazer instalação?" : "Registrar devolução?"}
+            </h2>
+            <p className="text-sm">
+              <strong>{returning.equipment_name}</strong> ({returning.document_code}) volta do setor{" "}
+              <strong>{returning.sector_name}</strong> e fica disponível no estoque do TI. A data e a hora serão as de agora.
+            </p>
+            {errorBox}
+            <div className="flex justify-end gap-2">
+              <button type="button" className="tw-btn" onClick={() => setReturning(null)}>Cancelar</button>
+              <button type="button" className="tw-btn tw-btn-ok" disabled={saving} onClick={() => void confirmReturn()}>
+                {saving ? "Salvando..." : "Confirmar"}
               </button>
             </div>
+          </div>
+        )}
+      </dialog>
+
+      {/* Confirmação de setor novo */}
+      <dialog ref={sectorRef} aria-labelledby="new-sector-title" className="m-auto w-[min(94vw,430px)] rounded-xl p-5 shadow-xl">
+        {pendingSector && (
+          <div className="space-y-4">
+            <h2 id="new-sector-title" className="text-base font-semibold">Cadastrar setor novo?</h2>
             <p className="text-sm">
-              O setor <strong>{pendingSectorConfirm.sectorName}</strong> não existe no catálogo. Deseja criá-lo agora e registrar a movimentação?
+              O setor <strong>{pendingSector.name}</strong> não existe no catálogo. Deseja cadastrá-lo e continuar?
             </p>
-            <div className="flex justify-end gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => setPendingSectorConfirm(null)}
-                className="px-3.5 py-2 rounded-lg text-xs border cursor-pointer"
-                style={{ borderColor: "var(--border)" }}
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                disabled={saving}
-                onClick={handleConfirmPendingSubmitSector}
-                className="px-4 py-2 rounded-lg text-xs font-semibold cursor-pointer disabled:opacity-60"
-                style={{ backgroundColor: "var(--brand)", color: "var(--brand-fg)" }}
-              >
-                {saving ? "Salvando..." : "Sim, criar setor e continuar"}
-              </button>
+            <div className="flex justify-end gap-2">
+              <button type="button" className="tw-btn" onClick={() => setPendingSector(null)}>Cancelar</button>
+              <button type="button" className="tw-btn tw-btn-primary" onClick={() => void confirmNewSector()}>Cadastrar e continuar</button>
             </div>
           </div>
         )}

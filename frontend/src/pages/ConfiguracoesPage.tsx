@@ -1,22 +1,58 @@
 import {
+  ArrowLeft,
   Building2,
+  CalendarClock,
   CheckCircle2,
   Download,
   Eye,
   EyeOff,
+  FileDown,
+  ListChecks,
+  LogOut,
+  MapPin,
   Monitor,
   Moon,
   Palette,
+  RefreshCw,
   Smartphone,
   Sun,
   Upload,
-  UserCircle2
+  UserCircle2,
+  Users
 } from "lucide-react";
 import { useState, type ChangeEvent, type FormEvent } from "react";
+import { AuditPanel } from "../components/AuditPanel";
+import { CadastrosPanel } from "../components/CadastrosPanel";
+import { ExportPanel } from "../components/ExportPanel";
 import { PageIntro } from "../components/PageIntro";
+import { SyncPanel } from "../components/SyncPanel";
 import type { PwaInstallState } from "../hooks/usePwaInstall";
+import type { FailedOpEntry } from "../offline/db";
 import { apiRequest, ApiError } from "../services/api";
-import type { AuthUser, PublicSettings, ThemePreference } from "../types";
+import type {
+  AuthUser,
+  CatalogEquipment,
+  CatalogLocation,
+  CatalogSector,
+  MovementItem,
+  PublicSettings,
+  SuggestionsPayload,
+  ThemePreference,
+  TiUser
+} from "../types";
+import { UsuariosPage } from "./UsuariosPage";
+
+export type SettingsTab =
+  | "conta"
+  | "preferencias"
+  | "organizacao"
+  | "cadastros"
+  | "regras"
+  | "equipe"
+  | "sincronizacao"
+  | "auditoria"
+  | "exportar"
+  | "aplicativo";
 
 interface ConfiguracoesPageProps {
   user: AuthUser;
@@ -24,12 +60,60 @@ interface ConfiguracoesPageProps {
   preference: ThemePreference;
   systemTheme: "light" | "dark";
   pwa: PwaInstallState;
+  initialTab?: SettingsTab;
+  users: TiUser[];
+  equipments: CatalogEquipment[];
+  movements: MovementItem[];
+  sectors: CatalogSector[];
+  locations: CatalogLocation[];
+  suggestions: SuggestionsPayload;
+  online: boolean;
+  syncing: boolean;
+  pendingCount: number;
+  failedOps: FailedOpEntry[];
+  onSyncNow: () => void;
+  onRetryFailed: (id: number, overwrite: boolean) => Promise<void>;
+  onDiscardFailed: (id: number) => Promise<void>;
+  onCreateSector: (payload: { name: string; is_default?: boolean }) => Promise<CatalogSector>;
+  onRefresh: () => Promise<void>;
   onChangeTheme: (pref: ThemePreference) => void;
   onChangePassword: (currentPassword: string, newPassword: string) => Promise<AuthUser>;
   onSettingsUpdated: (settings: PublicSettings) => void;
+  onLogoutAll: () => Promise<void>;
 }
 
-type SettingsTab = "conta" | "organizacao" | "aparencia" | "aplicativo";
+const NAV_GROUPS: Array<{
+  label: string;
+  items: Array<{ id: SettingsTab; label: string; hint: string; icon: typeof UserCircle2 }>;
+}> = [
+  {
+    label: "Pessoal",
+    items: [
+      { id: "conta", label: "Minha conta", hint: "Perfil, senha e sessões", icon: UserCircle2 },
+      { id: "preferencias", label: "Preferências", hint: "Tema claro ou escuro", icon: Palette }
+    ]
+  },
+  {
+    label: "Sistema",
+    items: [
+      { id: "organizacao", label: "Organização", hint: "Nome e logo", icon: Building2 },
+      { id: "cadastros", label: "Cadastros", hint: "Setores e locais", icon: MapPin },
+      { id: "regras", label: "Regras de empréstimo", hint: "Prazo padrão", icon: CalendarClock },
+      { id: "equipe", label: "Equipe", hint: "Usuários e acessos", icon: Users }
+    ]
+  },
+  {
+    label: "Dados",
+    items: [
+      { id: "sincronizacao", label: "Sincronização", hint: "Pendências offline", icon: RefreshCw },
+      { id: "auditoria", label: "Auditoria", hint: "Quem fez o quê", icon: ListChecks },
+      { id: "exportar", label: "Exportar e backup", hint: "CSV e cópia do banco", icon: FileDown },
+      { id: "aplicativo", label: "Aplicativo", hint: "Instalar no dispositivo", icon: Smartphone }
+    ]
+  }
+];
+
+const ALL_NAV = NAV_GROUPS.flatMap((g) => g.items);
 
 export function ConfiguracoesPage({
   user,
@@ -37,12 +121,76 @@ export function ConfiguracoesPage({
   preference,
   systemTheme,
   pwa,
+  initialTab,
+  users,
+  equipments,
+  movements,
+  sectors,
+  locations,
+  suggestions,
+  online,
+  syncing,
+  pendingCount,
+  failedOps,
+  onSyncNow,
+  onRetryFailed,
+  onDiscardFailed,
+  onCreateSector,
+  onRefresh,
   onChangeTheme,
   onChangePassword,
-  onSettingsUpdated
+  onSettingsUpdated,
+  onLogoutAll
 }: ConfiguracoesPageProps) {
-  const [subTab, setSubTab] = useState<SettingsTab>("conta");
+  const [subTab, setSubTab] = useState<SettingsTab>(initialTab ?? "conta");
+  /** No celular, o menu e a seção ocupam a tela inteira, um de cada vez. */
+  const [mobileShowSection, setMobileShowSection] = useState(Boolean(initialTab));
   const [installFeedback, setInstallFeedback] = useState<string | null>(null);
+
+  const [loanDays, setLoanDays] = useState(String(settings.loan_default_days ?? 7));
+  const [rulesMessage, setRulesMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const [rulesSaving, setRulesSaving] = useState(false);
+  const [logoutAllBusy, setLogoutAllBusy] = useState(false);
+
+  const current = ALL_NAV.find((n) => n.id === subTab)!;
+
+  const selectTab = (id: SettingsTab) => {
+    setSubTab(id);
+    setMobileShowSection(true);
+  };
+
+  const handleRulesSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    setRulesMessage(null);
+    const days = Number(loanDays);
+    if (!Number.isInteger(days) || days < 0 || days > 365) {
+      setRulesMessage({ ok: false, text: "Informe um número de dias entre 0 e 365." });
+      return;
+    }
+    setRulesSaving(true);
+    try {
+      const res = await apiRequest<{ settings: PublicSettings }>("/api/settings", {
+        method: "PATCH",
+        body: JSON.stringify({ loan_default_days: days })
+      });
+      onSettingsUpdated(res.settings);
+      setRulesMessage({ ok: true, text: "Regra salva. Vale para os próximos empréstimos." });
+    } catch (err) {
+      setRulesMessage({ ok: false, text: err instanceof Error ? err.message : "Erro ao salvar." });
+    } finally {
+      setRulesSaving(false);
+    }
+  };
+
+  const handleLogoutAll = async () => {
+    if (!window.confirm("Encerrar sua sessão em todos os dispositivos, inclusive neste?")) return;
+    setLogoutAllBusy(true);
+    try {
+      await onLogoutAll();
+    } finally {
+      setLogoutAllBusy(false);
+    }
+  };
 
   const [appName, setAppName] = useState(settings.app_name);
   const [orgName, setOrgName] = useState(settings.org_name);
@@ -58,13 +206,6 @@ export function ConfiguracoesPage({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-
-  const navItems: Array<{ id: SettingsTab; label: string; hint: string; icon: typeof UserCircle2 }> = [
-    { id: "conta", label: "Minha Conta", hint: "Perfil e senha", icon: UserCircle2 },
-    { id: "organizacao", label: "Organização", hint: "Nome e logo", icon: Building2 },
-    { id: "aparencia", label: "Aparência", hint: "Tema claro ou escuro", icon: Palette },
-    { id: "aplicativo", label: "Aplicativo", hint: "Instalar no dispositivo", icon: Smartphone }
-  ];
 
   const themeOptions: Array<{
     value: ThemePreference;
@@ -191,69 +332,125 @@ export function ConfiguracoesPage({
     <div className="space-y-5">
       <PageIntro
         title="Configurações"
-        purpose="Reúne os ajustes pessoais da sua conta, identidade da organização, aparência e instalação como aplicativo (PWA)."
+        purpose="Sua conta e preferências, os cadastros e regras do sistema, a equipe e os dados (sincronização, auditoria, exportação e backup)."
         howTo={[
-          "Em Minha Conta, confira os dados do seu login e altere sua senha pessoal com segurança.",
-          "Em Organização e Aparência, personalize nome/logo e alterne entre tema Claro, Escuro ou Padrão do sistema.",
-          "Em Aplicativo, instale o sistema no celular ou computador diretamente sem pop-ups invasivos."
+          "Pessoal: sua senha, as sessões abertas e o tema da interface.",
+          "Sistema: organização, setores e locais, prazo padrão de empréstimo e a equipe de TI.",
+          "Dados: pendências offline, a auditoria completa, exportação em planilha e backup."
         ]}
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-        {/* Left Settings Menu */}
-        <aside
+        <nav
           aria-label="Seções de configurações"
-          className="lg:col-span-3 rounded-xl border p-2.5 shadow-sm space-y-1"
-          style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
+          className={`lg:col-span-3 tw-card p-2.5 space-y-3 ${mobileShowSection ? "hidden lg:block" : ""}`}
         >
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const active = subTab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                aria-current={active ? "page" : undefined}
-                onClick={() => setSubTab(item.id)}
-                className="w-full min-h-[48px] px-3 py-2.5 rounded-lg text-left flex items-center gap-3 transition border cursor-pointer"
-                style={
-                  active
-                    ? {
-                        backgroundColor: "var(--brand-soft)",
-                        borderColor: "var(--brand)",
-                        color: "var(--brand)"
-                      }
-                    : {
-                        backgroundColor: "transparent",
-                        borderColor: "transparent",
-                        color: "var(--text)"
-                      }
-                }
-              >
-                <Icon className="w-4 h-4 shrink-0" aria-hidden="true" />
-                <span className="min-w-0">
-                  <span className="block text-sm font-semibold leading-tight">{item.label}</span>
-                  <span
-                    className="block text-xs truncate"
-                    style={{ color: active ? "var(--brand)" : "var(--text-muted)" }}
+          {NAV_GROUPS.map((group) => (
+            <div key={group.label} className="space-y-1">
+              <div className="px-3 pt-1 text-[11px] font-bold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
+                {group.label}
+              </div>
+              {group.items.map((item) => {
+                const Icon = item.icon;
+                const active = subTab === item.id;
+                const badge = item.id === "sincronizacao" && failedOps.length > 0 ? failedOps.length : null;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    aria-current={active ? "page" : undefined}
+                    onClick={() => selectTab(item.id)}
+                    className="w-full min-h-[48px] px-3 py-2 rounded-lg text-left flex items-center gap-3 border cursor-pointer"
+                    style={
+                      active
+                        ? { backgroundColor: "var(--brand-soft)", borderColor: "var(--brand)", color: "var(--brand)" }
+                        : { backgroundColor: "transparent", borderColor: "transparent", color: "var(--text)" }
+                    }
                   >
-                    {item.hint}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </aside>
+                    <Icon className="w-4 h-4 shrink-0" aria-hidden="true" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-semibold leading-tight">{item.label}</span>
+                      <span className="block text-xs truncate" style={{ color: active ? "var(--brand)" : "var(--text-muted)" }}>
+                        {item.hint}
+                      </span>
+                    </span>
+                    {badge && (
+                      <span className="tw-badge" style={{ backgroundColor: "var(--warn-soft)", color: "var(--warn)" }}>{badge}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
 
-        {/* Right Content Panel */}
-        <section
-          className="lg:col-span-9 rounded-xl border p-5 sm:p-6 shadow-sm space-y-6"
-          style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-        >
+        <section className={`lg:col-span-9 tw-card p-5 sm:p-6 space-y-6 ${mobileShowSection ? "" : "hidden lg:block"}`}>
+          <button type="button" className="tw-btn tw-btn-sm lg:hidden" onClick={() => setMobileShowSection(false)}>
+            <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" /> Configurações
+          </button>
+
+          {subTab !== "conta" && subTab !== "organizacao" && subTab !== "preferencias" && subTab !== "aplicativo" && (
+            <div className="border-b pb-3" style={{ borderColor: "var(--border)" }}>
+              <h2 className="text-base font-semibold">{current.label}</h2>
+              <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
+                {subTab === "cadastros" && "Setores de destino e locais de instalação usados nas movimentações."}
+                {subTab === "regras" && "Regras aplicadas automaticamente nas novas movimentações."}
+                {subTab === "equipe" && "Contas da equipe de TI. Todos têm o mesmo nível de acesso."}
+                {subTab === "sincronizacao" && "O que foi feito sem internet e ainda não chegou ao servidor, ou que o servidor recusou."}
+                {subTab === "auditoria" && "Registro de tudo o que foi feito no sistema, por quem e quando."}
+                {subTab === "exportar" && "Planilhas para análise e cópia de segurança do banco de dados."}
+              </p>
+            </div>
+          )}
+
+          {subTab === "cadastros" && (
+            <CadastrosPanel sectors={sectors} locations={locations} suggestions={suggestions} onCreateSector={onCreateSector} onRefresh={onRefresh} />
+          )}
+
+          {subTab === "regras" && (
+            <form onSubmit={handleRulesSubmit} className="space-y-4 max-w-xl">
+              <div>
+                <label htmlFor="rule-days" className="tw-label">Prazo padrão de devolução dos empréstimos (dias)</label>
+                <input id="rule-days" type="number" min={0} max={365} required value={loanDays} onChange={(e) => setLoanDays(e.target.value)} className="tw-input" style={{ maxWidth: "10rem" }} />
+                <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
+                  Sugerido ao registrar cada empréstimo e pode ser alterado na hora. Use 0 para não sugerir prazo. Empréstimos
+                  com prazo vencido aparecem como atrasados no Início.
+                </p>
+              </div>
+              <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+                Regras fixas: equipamentos em manutenção, avaliação, descartados ou devolvidos ao dono não podem sair, e um equipamento
+                não pode estar em duas movimentações ao mesmo tempo.
+              </p>
+              {rulesMessage && (
+                <p role={rulesMessage.ok ? "status" : "alert"} className="text-sm" style={{ color: rulesMessage.ok ? "var(--ok)" : "var(--cin-red)" }}>
+                  {rulesMessage.text}
+                </p>
+              )}
+              <button type="submit" className="tw-btn tw-btn-primary" disabled={rulesSaving}>{rulesSaving ? "Salvando..." : "Salvar regra"}</button>
+            </form>
+          )}
+
+          {subTab === "equipe" && <UsuariosPage users={users} currentUser={user} onRefresh={onRefresh} />}
+
+          {subTab === "sincronizacao" && (
+            <SyncPanel
+              online={online}
+              syncing={syncing}
+              pendingCount={pendingCount}
+              failedOps={failedOps}
+              onSyncNow={onSyncNow}
+              onRetry={onRetryFailed}
+              onDiscard={onDiscardFailed}
+            />
+          )}
+
+          {subTab === "auditoria" && <AuditPanel users={users} />}
+
+          {subTab === "exportar" && <ExportPanel equipments={equipments} movements={movements} />}
           {subTab === "conta" && (
             <div className="space-y-6">
               <div className="border-b pb-3" style={{ borderColor: "var(--border)" }}>
-                <h2 className="text-base font-semibold">Minha Conta</h2>
+                <h2 className="text-base font-semibold">Minha conta</h2>
                 <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
                   Informações do seu usuário autenticado e atualização de senha.
                 </p>
@@ -341,7 +538,7 @@ export function ConfiguracoesPage({
                   type="button"
                   aria-pressed={showPasswords}
                   onClick={() => setShowPasswords((v) => !v)}
-                  className="inline-flex items-center gap-1.5 text-xs font-medium cursor-pointer"
+                  className="flex items-center gap-1.5 text-xs font-medium cursor-pointer"
                   style={{ color: "var(--text-muted)" }}
                 >
                   {showPasswords ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
@@ -385,6 +582,17 @@ export function ConfiguracoesPage({
                   {saving ? "Salvando..." : "Atualizar senha"}
                 </button>
               </form>
+
+              <section className="pt-5 border-t space-y-2 max-w-xl" style={{ borderColor: "var(--border)" }}>
+                <h3 className="text-sm font-semibold">Sessões</h3>
+                <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+                  Se você esqueceu o sistema aberto em outro computador ou celular, encerre todas as sessões. Você precisará
+                  entrar de novo em todos os dispositivos, inclusive neste.
+                </p>
+                <button type="button" className="tw-btn tw-btn-danger" disabled={logoutAllBusy} onClick={() => void handleLogoutAll()}>
+                  <LogOut className="w-4 h-4" aria-hidden="true" /> Sair de todos os dispositivos
+                </button>
+              </section>
             </div>
           )}
 
@@ -463,7 +671,7 @@ export function ConfiguracoesPage({
                         className="min-h-[44px] px-4 py-2 rounded-lg text-xs border cursor-pointer"
                         style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
                       >
-                        Restaurar padrão
+                        Remover logo (usar padrão)
                       </button>
                     )}
                   </div>
@@ -509,10 +717,10 @@ export function ConfiguracoesPage({
             </div>
           )}
 
-          {subTab === "aparencia" && (
+          {subTab === "preferencias" && (
             <div className="space-y-6">
               <div className="border-b pb-3" style={{ borderColor: "var(--border)" }}>
-                <h2 className="text-base font-semibold">Aparência</h2>
+                <h2 className="text-base font-semibold">Preferências</h2>
                 <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
                   Preferência de cores salva localmente para este navegador.
                 </p>

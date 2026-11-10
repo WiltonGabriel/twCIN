@@ -11,19 +11,18 @@ Aplicação web progressiva (PWA) offline-first para gestão interna do setor de
 
 ## O que o projeto faz
 
-O **twCIN** oferece à equipe de TI um ambiente único para controlar equipamentos sob responsabilidade do setor (**Equipamentos**), registrar saídas e empréstimos para outros setores (**Movimentações**), acompanhar métricas operacionais (**Gráficos**) e executar ações rápidas do dia a dia (**Início**) — sem depender de portal de chamados para usuários finais.
+O **twCIN** oferece à equipe de TI um ambiente único para controlar equipamentos sob responsabilidade do setor (**Equipamentos**), registrar empréstimos e instalações para outros setores (**Movimentações**), acompanhar o dia a dia e os indicadores (**Início**) e administrar cadastros, equipe e dados (**Configurações**), sem depender de portal de chamados para usuários finais.
 
 ## Por que ele é útil
 
-- **Visão rápida (`Início`):** Busca unificada, atalhos para ações frequentes, lista de equipamentos em manutenção/avaliação e empréstimos em aberto em um só lugar.
-- **Gestão de equipamentos (`Equipamentos`):** Distingue itens próprios do TI, estoque e equipamentos recebidos de terceiros/outros setores (com origem, de quem foi recebido, motivo, situação atual e histórico vinculado).
-- **Movimentações, histórico e PDFs (`Movimentações`):** Preenchimento automático ou manual de data e hora, seleção pesquisável de setores com opção manual, autocomplete e criação confirmada no catálogo, local de instalação obrigatório, configuração integrada de setores e locais, histórico completo com trilha de logs e exportação em PDF A4.
-- **Indicadores visuais (`Gráficos`):** Gráficos para análise rápida da situação do acervo, origem dos equipamentos, linha do tempo dos últimos 14 dias, setores mais atendidos, locais frequentes, itens mais movimentados e atuação dos técnicos.
-- **Edição completa e auditoria imutável:** Todos os registros de equipamentos, movimentações, setores, locais e usuários são editáveis e rastreados na tabela `audit_logs` com snapshots JSON antes/depois.
-- **PWA offline-first com sincronização:** Instalável em computador e celular (via **Configurações → Aplicativo**, sem pop-ups automáticos), armazena dados em `IndexedDB` (Dexie), enfileira mutações offline com idempotência por `client_uuid` e detecta conflitos por `version`.
-- **Segurança por padrão:** Senhas com `scrypt` + `timingSafeEqual`, sessões via cookie JWT `HttpOnly`, revogação imediata de sessões via `token_version`, troca obrigatória de senha no primeiro acesso (configurável por usuário), validação com Zod, `@fastify/helmet` e `@fastify/rate-limit`.
-- **Identidade personalizável e temas (`Configurações`):** Gerencie conta pessoal (**Minha Conta**), personalize nome do sistema, nome da organização e logo PNG/JPEG/WebP (**Organização**), escolha entre **Padrão do sistema**, **Claro** ou **Escuro** (**Aparência**) e instale o PWA sob demanda (**Aplicativo**).
-
+- **Visão rápida (`Início`):** busca unificada, empréstimos atrasados e vencendo, equipamentos em manutenção/avaliação, o que está emprestado agora e, na aba **Indicadores**, os gráficos do acervo e das movimentações.
+- **Gestão de equipamentos (`Equipamentos`):** tabela com situação e "onde está" de cada item; distingue itens próprios, estoque e equipamentos de terceiros/outros setores, que podem ser **devolvidos ao dono** com histórico preservado.
+- **Movimentações com regras (`Movimentações`):** escolha do equipamento pelo catálogo (nome + patrimônio + situação), prazo de devolução com prazo padrão configurável, confirmação de devolução, instalação fixa que pode ser desfeita, histórico, trilha de registros e PDF com termo de entrega.
+- **Situação sempre coerente:** a saída marca o equipamento como Emprestado (ou Em uso na instalação fixa) e a devolução como Disponível; equipamentos em manutenção, avaliação, descartados ou já fora não podem sair.
+- **Auditoria imutável:** todos os registros são rastreados em `audit_logs` com snapshots antes/depois, consultáveis em **Configurações → Auditoria** com filtros e paginação.
+- **PWA offline-first com sincronização:** instalável em computador e celular, dados em `IndexedDB` (Dexie), fila offline por usuário com idempotência por `client_uuid`, detecção de conflitos por `version` e tela de **pendências de sincronização** para reaplicar ou descartar o que o servidor recusou.
+- **Segurança por padrão:** senhas com `scrypt`, sessão em cookie JWT `HttpOnly` revogada no logout, "sair de todos os dispositivos", troca obrigatória de senha no primeiro acesso, validação com Zod, `@fastify/helmet` e `@fastify/rate-limit`.
+- **Configurações organizadas:** Pessoal (minha conta, preferências), Sistema (organização, cadastros de setores e locais, regras de empréstimo, equipe) e Dados (sincronização, auditoria, exportação CSV e backup do banco, aplicativo).
 ## Primeiros passos
 
 ### Pré-requisitos
@@ -76,7 +75,7 @@ npm test
 npm run build
 ```
 
-> **Nota para uso em rede local / celular (PWA):** Navegadores móveis exigem `localhost` ou **HTTPS** para habilitar o Service Worker e a instalação do PWA. Para instalação em celulares da rede, publique o build `frontend/dist` com proxy reverso para `/api` atrás de HTTPS (por exemplo, Caddy ou Nginx).
+> **Nota para uso em rede local / celular (PWA):** Navegadores móveis exigem `localhost` ou **HTTPS** para habilitar o Service Worker e a instalação do PWA. Para instalação em celulares da rede, publique o build `frontend/dist` com proxy reverso para `/api` atrás de HTTPS (por exemplo, Caddy ou Nginx). Nesse cenário, defina `TRUST_PROXY` no `backend/.env` (por exemplo, `TRUST_PROXY=127.0.0.1`, o IP do proxy) para que o backend enxergue o IP real de cada cliente; sem isso, o rate limit de login passa a ser compartilhado por todos os usuários. Não habilite `TRUST_PROXY` se o backend recebe conexões diretas, pois o cabeçalho `X-Forwarded-For` poderia ser forjado.
 
 ## Estrutura do projeto
 

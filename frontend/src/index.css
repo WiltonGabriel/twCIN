@@ -138,7 +138,9 @@ dialog::backdrop {
   outline-offset: 2px;
 }
 
-/* Form controls */
+/* Form controls (em @layer components: utilitários como pl-9 precisam vencer o padding padrão,
+   senão o ícone de busca fica por cima do texto) */
+@layer components {
 .tw-input {
   width: 100%;
   min-height: 44px;
@@ -169,6 +171,141 @@ dialog::backdrop {
   .tw-input {
     min-height: 48px;
   }
+}
+
+/* Componentes base reutilizáveis (mesma camada: utilitários do Tailwind têm prioridade). */
+.tw-card {
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background-color: var(--surface);
+}
+
+.tw-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 40px;
+  padding: 0.45rem 0.9rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  background-color: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+
+.tw-btn:hover:not(:disabled) {
+  background-color: var(--surface-alt);
+}
+
+.tw-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.tw-btn-primary {
+  background-color: var(--brand);
+  border-color: var(--brand);
+  color: var(--brand-fg);
+}
+
+.tw-btn-primary:hover:not(:disabled) {
+  background-color: var(--brand-hover);
+}
+
+.tw-btn-ok {
+  background-color: var(--ok);
+  border-color: var(--ok);
+  color: #ffffff;
+}
+
+.tw-btn-ok:hover:not(:disabled) {
+  background-color: var(--ok);
+  filter: brightness(1.08);
+}
+
+.tw-btn-danger {
+  color: var(--cin-red);
+  border-color: var(--cin-red-soft);
+}
+
+.tw-btn-danger:hover:not(:disabled) {
+  background-color: var(--cin-red-soft);
+}
+
+.tw-btn-sm {
+  min-height: 32px;
+  padding: 0.3rem 0.65rem;
+  font-size: 0.75rem;
+}
+
+.tw-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background-color: var(--surface);
+}
+
+.tw-stat strong {
+  font-size: 1.5rem;
+  line-height: 1.2;
+}
+
+.tw-stat-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.tw-label {
+  display: block;
+  margin-bottom: 0.3rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.tw-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* Tabela de dados */
+.tw-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.tw-table th {
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.tw-table td {
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.tw-table tbody tr:hover {
+  background-color: var(--surface-alt);
+}
 }
 
 /* Responsive table wrapper */

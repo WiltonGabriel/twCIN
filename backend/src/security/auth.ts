@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { jwtVerify, SignJWT } from "jose";
@@ -17,6 +18,7 @@ export interface AuthUser {
 declare module "fastify" {
   interface FastifyRequest {
     currentUser?: AuthUser;
+    currentSession?: { jti: string | null; exp: number | null };
   }
 }
 
@@ -32,6 +34,8 @@ export async function signSessionToken(
     tv: user.token_version
   })
     .setProtectedHeader({ alg: "HS256" })
+    // jti identifica esta sessão para que o logout possa invalidá-la sozinha.
+    .setJti(crypto.randomUUID())
     .setIssuedAt()
     .setExpirationTime(`${SESSION_TTL_SECONDS}s`)
     .sign(key);
@@ -40,7 +44,7 @@ export async function signSessionToken(
 export async function verifySessionToken(
   token: string,
   secret: string
-): Promise<{ id: number; token_version: number } | null> {
+): Promise<{ id: number; token_version: number; jti: string | null; exp: number | null } | null> {
   try {
     const key = new TextEncoder().encode(secret);
     const { payload } = await jwtVerify(token, key, { algorithms: ["HS256"] });
@@ -49,10 +53,28 @@ export async function verifySessionToken(
     if (!Number.isInteger(id) || id <= 0 || !Number.isInteger(tokenVersion)) {
       return null;
     }
-    return { id, token_version: tokenVersion };
+    return {
+      id,
+      token_version: tokenVersion,
+      jti: typeof payload.jti === "string" ? payload.jti : null,
+      exp: typeof payload.exp === "number" ? payload.exp : null
+    };
   } catch {
     return null;
   }
+}
+
+/** Invalida uma sessão específica (logout deste dispositivo). */
+export function revokeSession(db: DatabaseSync, jti: string, exp: number | null): void {
+  const expiresAt = new Date((exp ?? Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS) * 1000).toISOString();
+  db.prepare("INSERT OR IGNORE INTO revoked_sessions (jti, expires_at) VALUES (?, ?)").run(jti, expiresAt);
+  // Limpeza oportunista: sessões revogadas que já expiraram não precisam mais ser guardadas.
+  db.prepare("DELETE FROM revoked_sessions WHERE expires_at < ?").run(new Date().toISOString());
+}
+
+function isSessionRevoked(db: DatabaseSync, jti: string | null): boolean {
+  if (!jti) return false;
+  return Boolean(db.prepare("SELECT 1 FROM revoked_sessions WHERE jti = ?").get(jti));
 }
 
 export function setSessionCookie(reply: FastifyReply, token: string, cookieSecure: boolean): void {
@@ -87,7 +109,7 @@ export function createAuthGuard(
     }
 
     const decoded = await verifySessionToken(token, secret);
-    if (!decoded) {
+    if (!decoded || isSessionRevoked(db, decoded.jti)) {
       reply.code(401).send({ error: "Sessão inválida." });
       return;
     }
@@ -122,6 +144,7 @@ export function createAuthGuard(
       return;
     }
 
+    request.currentSession = { jti: decoded.jti, exp: decoded.exp };
     request.currentUser = {
       id: dbUser.id,
       username: dbUser.username,

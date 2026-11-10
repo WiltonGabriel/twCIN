@@ -4,6 +4,7 @@ import {
   createEquipmentSchema,
   createLocationSchema,
   createSectorSchema,
+  returnToOwnerSchema,
   updateEquipmentSchema,
   updateLocationSchema,
   updateSectorSchema
@@ -17,6 +18,7 @@ import {
   listCatalogEquipments,
   listCatalogLocations,
   listCatalogSectors,
+  returnEquipmentToOwner,
   updateCatalogEquipment,
   updateCatalogLocation,
   updateCatalogSector
@@ -65,6 +67,16 @@ export function registerCatalogRoutes(
     }
     const input = updateEquipmentSchema.parse(request.body);
     const item = updateCatalogEquipment(db, { id }, input, request.currentUser!, request.ip);
+    return { item };
+  });
+
+  app.post("/api/catalogs/equipments/:id/return-to-owner", { preHandler: [requireAuth] }, async (request) => {
+    const id = Number((request.params as { id: string }).id);
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new BadRequestError("ID inválido.");
+    }
+    const input = returnToOwnerSchema.parse(request.body);
+    const item = returnEquipmentToOwner(db, { id }, input, request.currentUser!, request.ip);
     return { item };
   });
 

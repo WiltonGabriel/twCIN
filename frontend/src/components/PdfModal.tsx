@@ -1,6 +1,7 @@
 import { Printer, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import type { CatalogEquipment, MovementItem, PublicSettings } from "../types";
+import { CONDITION_LABELS, OWNERSHIP_LABELS } from "../types/labels";
 
 export type PdfPayload =
   | { kind: "movement"; item: MovementItem }
@@ -26,20 +27,11 @@ function formatDateTime(iso: string | null | undefined): string {
   });
 }
 
-const OWNERSHIP_LABELS: Record<CatalogEquipment["ownership_type"], string> = {
-  proprio_ti: "Próprio do TI",
-  estoque: "Em estoque",
-  terceiro: "Terceiro / Outro setor"
-};
-
-const CONDITION_LABELS: Record<CatalogEquipment["condition_status"], string> = {
-  disponivel: "Disponível",
-  em_uso: "Em uso",
-  manutencao: "Manutenção",
-  avaliacao: "Avaliação",
-  emprestado: "Emprestado",
-  descartado: "Descartado"
-};
+function formatDateOnly(iso: string | null | undefined): string {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("pt-BR");
+}
 
 export function PdfModal({ payload, settings, onClose }: PdfModalProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -162,6 +154,12 @@ export function PdfModal({ payload, settings, onClose }: PdfModalProps) {
                   {payload.item.movement_type === "instalacao_fixa" ? "Instalação fixa" : "Empréstimo"}
                 </strong>
               </div>
+              {payload.item.movement_type === "emprestimo" && (
+                <div>
+                  <span className="text-slate-500 block">Prazo de devolução</span>
+                  <strong>{payload.item.due_at ? formatDateOnly(payload.item.due_at) : "Sem prazo definido"}</strong>
+                </div>
+              )}
               <div>
                 <span className="text-slate-500 block">Registrado / Entregue por (TI)</span>
                 <strong>{payload.item.registered_by_name}</strong>
@@ -189,6 +187,18 @@ export function PdfModal({ payload, settings, onClose }: PdfModalProps) {
                 </div>
               )}
             </div>
+
+            {payload.item.status !== "devolvido" && (
+              <p className="text-xs leading-relaxed pt-4">
+                Declaro ter recebido o equipamento acima em perfeito estado de funcionamento e me comprometo a zelar por ele
+                {payload.item.movement_type === "emprestimo"
+                  ? payload.item.due_at
+                    ? ` e devolvê-lo ao setor de TI até ${formatDateOnly(payload.item.due_at)}`
+                    : " e devolvê-lo ao setor de TI quando solicitado"
+                  : " enquanto estiver instalado no local indicado"}
+                , comunicando qualquer defeito, perda ou dano.
+              </p>
+            )}
 
             <div className="pt-10 grid grid-cols-2 gap-10 text-center text-xs">
               <div className="border-t border-slate-500 pt-2">

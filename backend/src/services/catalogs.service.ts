@@ -3,7 +3,15 @@ import type { DatabaseSync } from "node:sqlite";
 import { withTransaction } from "../db/connection.js";
 import { writeAuditLog } from "../security/audit.js";
 import type { AuthUser } from "../security/auth.js";
-import { ConflictError, NotFoundError } from "./errors.js";
+import { findOpenMovement } from "./equipmentState.js";
+import { BadRequestError, ConflictError, NotFoundError } from "./errors.js";
+
+function assertSectorExists(db: DatabaseSync, sectorId: number | null | undefined): void {
+  if (sectorId === null || sectorId === undefined) return;
+  if (!db.prepare("SELECT id FROM catalog_sectors WHERE id = ?").get(sectorId)) {
+    throw new BadRequestError("Setor informado não existe.");
+  }
+}
 
 export type EquipmentOwnership = "proprio_ti" | "estoque" | "terceiro";
 export type EquipmentCondition =
@@ -12,7 +20,8 @@ export type EquipmentCondition =
   | "manutencao"
   | "avaliacao"
   | "emprestado"
-  | "descartado";
+  | "descartado"
+  | "devolvido_dono";
 
 export interface CatalogEquipmentRow {
   id: number;
@@ -32,6 +41,9 @@ export interface CatalogEquipmentRow {
   created_by_name: string;
   updated_by_id: number | null;
   updated_by_name: string;
+  owner_returned_at: string | null;
+  owner_received_by: string;
+  owner_returned_by_name: string;
   created_at: string;
   updated_at: string;
 }
@@ -110,6 +122,10 @@ export function createCatalogEquipment(
 
   const now = new Date().toISOString();
   const pat = input.patrimony?.trim() || null;
+
+  if (input.condition_status === "emprestado" || input.condition_status === "devolvido_dono") {
+    throw new BadRequestError("Essa situação é definida por uma movimentação ou pela devolução ao dono.");
+  }
 
   if (pat) {
     const dup = db.prepare("SELECT id FROM catalog_equipments WHERE LOWER(patrimony) = LOWER(?)").get(pat);
@@ -200,6 +216,22 @@ export function updateCatalogEquipment(
     throw new ConflictError("Este equipamento foi atualizado por outro usuário.", { current });
   }
 
+  // A situação "emprestado" e "devolvido ao dono" vêm de ações próprias, não da edição manual.
+  const conditionChanged =
+    input.condition_status !== undefined && input.condition_status !== current.condition_status;
+  if (conditionChanged && input.condition_status === "emprestado") {
+    throw new BadRequestError("A situação \"Emprestado\" é definida automaticamente ao registrar uma movimentação.");
+  }
+  if (conditionChanged && input.condition_status === "devolvido_dono") {
+    throw new BadRequestError("Use a ação \"Devolver ao dono\" para registrar a devolução de um equipamento de terceiro.");
+  }
+  const openMovement = findOpenMovement(db, current.id);
+  if (openMovement && (conditionChanged || input.active === false)) {
+    throw new ConflictError(
+      `O equipamento está fora na movimentação ${openMovement.document_code}. Registre a devolução antes de alterar a situação.`
+    );
+  }
+
   const nextPat = input.patrimony !== undefined ? input.patrimony.trim() || null : current.patrimony;
   if (nextPat) {
     const dup = db
@@ -262,6 +294,78 @@ export function updateCatalogEquipment(
       ipAddress
     });
 
+    return updated;
+  });
+}
+
+/**
+ * Registra a devolução de um equipamento de terceiro/outro setor ao dono.
+ * O equipamento sai do acervo ativo (active = 0) com situação "devolvido_dono" e o histórico fica preservado.
+ */
+export function returnEquipmentToOwner(
+  db: DatabaseSync,
+  idOrUuid: { id?: number; clientUuid?: string },
+  input: { returned_at?: string; received_by: string; notes?: string; expected_version?: number },
+  actor: AuthUser,
+  ipAddress: string
+): CatalogEquipmentRow {
+  const current = findEquipmentByIdOrUuid(db, idOrUuid.id, idOrUuid.clientUuid);
+  if (!current) {
+    throw new NotFoundError("Equipamento não encontrado.");
+  }
+  if (current.condition_status === "devolvido_dono") {
+    return current;
+  }
+  if (input.expected_version !== undefined && input.expected_version !== current.version) {
+    throw new ConflictError("Este equipamento foi atualizado por outro usuário.", { current });
+  }
+  if (current.ownership_type !== "terceiro") {
+    throw new BadRequestError("Só equipamentos recebidos de terceiros ou de outro setor podem ser devolvidos ao dono.");
+  }
+  const open = findOpenMovement(db, current.id);
+  if (open) {
+    throw new ConflictError(
+      `O equipamento está fora na movimentação ${open.document_code}. Registre a devolução dela antes.`
+    );
+  }
+
+  const now = new Date().toISOString();
+  const returnedAt = input.returned_at || now;
+  if (new Date(returnedAt).getTime() < new Date(current.created_at).getTime()) {
+    throw new BadRequestError("A data de devolução ao dono não pode ser anterior ao cadastro do equipamento.");
+  }
+  const notes = input.notes?.trim()
+    ? [current.notes, `Devolução ao dono: ${input.notes.trim()}`].filter(Boolean).join("\n")
+    : current.notes;
+
+  return withTransaction(db, () => {
+    db.prepare(`
+      UPDATE catalog_equipments SET
+        condition_status = 'devolvido_dono',
+        active = 0,
+        owner_returned_at = ?,
+        owner_received_by = ?,
+        owner_returned_by_name = ?,
+        notes = ?,
+        version = version + 1,
+        updated_by_id = ?,
+        updated_by_name = ?,
+        updated_at = ?
+      WHERE id = ?
+    `).run(returnedAt, input.received_by.trim(), actor.full_name, notes, actor.id, actor.full_name, now, current.id);
+
+    const updated = findEquipmentByIdOrUuid(db, current.id)!;
+    writeAuditLog(db, {
+      userId: actor.id,
+      userName: actor.full_name,
+      action: "RETURN_TO_OWNER",
+      entity: "catalog_equipment",
+      entityId: updated.id,
+      summary: `Equipamento ${updated.name} devolvido ao dono (recebido por ${input.received_by.trim()})`,
+      before: current,
+      after: updated,
+      ipAddress
+    });
     return updated;
   });
 }
@@ -387,6 +491,7 @@ export function createCatalogLocation(
   if (dup) {
     throw new ConflictError("Este local já está cadastrado.");
   }
+  assertSectorExists(db, input.sector_id);
 
   const now = new Date().toISOString();
   return withTransaction(db, () => {
@@ -435,6 +540,9 @@ export function updateCatalogLocation(
   if (dup) {
     throw new ConflictError("Já existe outro local com este nome.");
   }
+  if (input.sector_id !== undefined) {
+    assertSectorExists(db, input.sector_id);
+  }
 
   return withTransaction(db, () => {
     db.prepare(`
@@ -473,13 +581,32 @@ export function getSuggestions(db: DatabaseSync): SuggestionsPayload {
     equipmentMap.set(key, { id: eq.id, name: eq.name, patrimony: pat });
   }
 
+  // Itens desativados no catálogo não devem "voltar" pelas sugestões vindas do histórico.
+  const inactiveEquipKeys = new Set(
+    (
+      db
+        .prepare("SELECT name, patrimony FROM catalog_equipments WHERE active = 0")
+        .all() as Array<{ name: string; patrimony: string | null }>
+    ).map((eq) => `${eq.name.toLowerCase()}|${(eq.patrimony || "").toLowerCase()}`)
+  );
+  const inactiveSectorNames = new Set(
+    (db.prepare("SELECT name FROM catalog_sectors WHERE active = 0").all() as Array<{ name: string }>).map(
+      (s) => s.name.toLowerCase()
+    )
+  );
+  const inactiveLocationNames = new Set(
+    (db.prepare("SELECT name FROM catalog_locations WHERE active = 0").all() as Array<{ name: string }>).map(
+      (l) => l.name.toLowerCase()
+    )
+  );
+
   const recentEqRows = db
     .prepare("SELECT equipment_name, patrimony FROM movements WHERE equipment_name != ''")
     .all() as Array<{ equipment_name: string; patrimony: string }>;
 
   for (const row of recentEqRows) {
     const key = `${row.equipment_name.toLowerCase()}|${(row.patrimony || "").toLowerCase()}`;
-    if (!equipmentMap.has(key)) {
+    if (!equipmentMap.has(key) && !inactiveEquipKeys.has(key)) {
       equipmentMap.set(key, { id: null, name: row.equipment_name, patrimony: row.patrimony || "" });
     }
   }
@@ -499,7 +626,7 @@ export function getSuggestions(db: DatabaseSync): SuggestionsPayload {
     .all() as Array<{ name: string }>;
 
   for (const row of recentSectorRows) {
-    if (!sectorMap.has(row.name.toLowerCase())) {
+    if (!sectorMap.has(row.name.toLowerCase()) && !inactiveSectorNames.has(row.name.toLowerCase())) {
       sectorMap.set(row.name.toLowerCase(), { id: null, name: row.name, is_default: false });
     }
   }
@@ -512,7 +639,9 @@ export function getSuggestions(db: DatabaseSync): SuggestionsPayload {
     .prepare("SELECT DISTINCT install_location AS name FROM movements WHERE install_location != ''")
     .all() as Array<{ name: string }>;
   for (const row of recentLocRows) {
-    locationSet.add(row.name);
+    if (!inactiveLocationNames.has(row.name.toLowerCase())) {
+      locationSet.add(row.name);
+    }
   }
 
   const peopleSet = new Set<string>();

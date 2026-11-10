@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+// Mesma política de senha em todo o sistema (antes: 8 no setup/troca e 6 na criação/redefinição).
+const passwordSchema = z.string().min(8, "A senha deve ter no mínimo 8 caracteres.").max(128);
+
 export const loginSchema = z.object({
   username: z.string().trim().min(2).max(60),
   password: z.string().min(1).max(128)
@@ -30,7 +33,8 @@ export const updateSettingsSchema = z.object({
         /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(val),
       "Formato de imagem inválido. Use PNG, JPEG ou WebP."
     )
-    .optional()
+    .optional(),
+  loan_default_days: z.number().int().min(0, "Prazo inválido.").max(365, "O prazo máximo é de 365 dias.").optional()
 });
 
 export const changePasswordSchema = z.object({
@@ -49,7 +53,7 @@ export const createUserSchema = z.object({
     .min(2)
     .max(50)
     .regex(/^[a-zA-Z0-9._-]+$/, "Usuário deve conter apenas letras, números, ponto, hífen ou sublinhado."),
-  password: z.string().min(6, "A senha deve ter no mínimo 6 caracteres.").max(128),
+  password: passwordSchema,
   must_change_password: z.boolean().optional().default(true)
 });
 
@@ -62,10 +66,14 @@ export const updateUserSchema = z.object({
     .max(50)
     .regex(/^[a-zA-Z0-9._-]+$/, "Usuário deve conter apenas letras, números, ponto, hífen ou sublinhado.")
     .optional(),
-  password: z.string().min(6, "A senha deve ter no mínimo 6 caracteres.").max(128).optional(),
+  password: passwordSchema.optional(),
   active: z.boolean().optional(),
   must_change_password: z.boolean().optional()
 });
+
+// Data/hora ISO 8601 completa (ex.: 2026-11-10T20:46:07.590Z). Antes aceitava qualquer texto
+// com 10+ caracteres, o que permitia gravar valores como "aaaaaaaaaa" em out_at/returned_at.
+const isoDateTime = (message: string) => z.string().datetime({ offset: true, message });
 
 export const movementTypeEnum = z.enum(["emprestimo", "instalacao_fixa"]);
 export const movementStatusEnum = z.enum(["ativo", "devolvido", "fixo"]);
@@ -81,7 +89,9 @@ export const createMovementSchema = z.object({
   install_location: z.string().trim().min(1, "Informe o local de instalação.").max(140),
   received_by: z.string().trim().max(120).optional().default(""),
   notes: z.string().trim().max(1000).optional().default(""),
-  out_at: z.string().datetime({ offset: true }).or(z.string().min(10)).optional()
+  out_at: isoDateTime("Data/hora de saída inválida.").optional(),
+  /** Prazo de devolução. Ausente = prazo padrão das configurações; null = sem prazo. */
+  due_at: isoDateTime("Prazo de devolução inválido.").nullable().optional()
 });
 
 export const updateMovementSchema = z.object({
@@ -94,14 +104,15 @@ export const updateMovementSchema = z.object({
   install_location: z.string().trim().min(1, "Informe o local de instalação.").max(140).optional(),
   received_by: z.string().trim().max(120).optional(),
   notes: z.string().trim().max(1000).optional(),
-  out_at: z.string().min(10).optional(),
-  returned_at: z.string().min(10).nullable().optional(),
+  out_at: isoDateTime("Data/hora de saída inválida.").optional(),
+  returned_at: isoDateTime("Data/hora de devolução inválida.").nullable().optional(),
+  due_at: isoDateTime("Prazo de devolução inválido.").nullable().optional(),
   status: movementStatusEnum.optional(),
   expected_version: z.number().int().positive().optional()
 });
 
 export const returnMovementSchema = z.object({
-  returned_at: z.string().min(10).optional(),
+  returned_at: isoDateTime("Data/hora de devolução inválida.").optional(),
   notes: z.string().trim().max(1000).optional(),
   expected_version: z.number().int().positive().optional()
 });
@@ -113,8 +124,16 @@ export const equipmentConditionEnum = z.enum([
   "manutencao",
   "avaliacao",
   "emprestado",
-  "descartado"
+  "descartado",
+  "devolvido_dono"
 ]);
+
+export const returnToOwnerSchema = z.object({
+  returned_at: isoDateTime("Data/hora inválida.").optional(),
+  received_by: z.string().trim().min(1, "Informe quem recebeu o equipamento.").max(120),
+  notes: z.string().trim().max(1000).optional(),
+  expected_version: z.number().int().positive().optional()
+});
 
 export const createEquipmentSchema = z.object({
   client_uuid: z.string().uuid().optional(),
@@ -180,6 +199,13 @@ export const syncOperationSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     op_id: z.string().min(1),
+    type: z.literal("equipment.return_to_owner"),
+    entity_id: z.number().int().positive().optional(),
+    client_uuid: z.string().uuid().optional(),
+    payload: returnToOwnerSchema
+  }),
+  z.object({
+    op_id: z.string().min(1),
     type: z.literal("movement.create"),
     payload: createMovementSchema
   }),
@@ -204,6 +230,9 @@ export const syncOperationSchema = z.discriminatedUnion("type", [
   })
 ]);
 
+// O lote é validado só no formato geral; cada operação é validada individualmente em
+// processSyncBatch. Assim, uma operação inválida vira um resultado "error" isolado em vez de
+// rejeitar o lote inteiro com 400 (o que travava a fila offline para sempre).
 export const syncBatchSchema = z.object({
-  operations: z.array(syncOperationSchema).max(100)
+  operations: z.array(z.unknown()).max(100)
 });

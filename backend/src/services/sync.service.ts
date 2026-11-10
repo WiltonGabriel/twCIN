@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { z } from "zod";
-import type { syncOperationSchema } from "../schemas/index.js";
+import { syncOperationSchema } from "../schemas/index.js";
 import type { AuthUser } from "../security/auth.js";
 import {
   createCatalogEquipment,
@@ -9,6 +9,7 @@ import {
   listCatalogEquipments,
   listCatalogLocations,
   listCatalogSectors,
+  returnEquipmentToOwner,
   updateCatalogEquipment
 } from "./catalogs.service.js";
 import { ConflictError, NotFoundError } from "./errors.js";
@@ -25,15 +26,34 @@ export interface SyncOpResult {
   error?: string;
 }
 
+function extractOpId(raw: unknown): string {
+  if (raw && typeof raw === "object" && "op_id" in raw) {
+    const value = (raw as { op_id?: unknown }).op_id;
+    if (typeof value === "string") return value;
+  }
+  return "";
+}
+
 export function processSyncBatch(
   db: DatabaseSync,
-  operations: SyncOperation[],
+  operations: unknown[],
   actor: AuthUser,
   ipAddress: string
 ): SyncOpResult[] {
   const results: SyncOpResult[] = [];
 
-  for (const op of operations) {
+  for (const raw of operations) {
+    const parsedOp = syncOperationSchema.safeParse(raw);
+    if (!parsedOp.success) {
+      results.push({
+        op_id: extractOpId(raw),
+        status: "error",
+        error: parsedOp.error.issues[0]?.message || "Operação de sincronização inválida."
+      });
+      continue;
+    }
+    const op: SyncOperation = parsedOp.data;
+
     try {
       switch (op.type) {
         case "equipment.create": {
@@ -50,6 +70,17 @@ export function processSyncBatch(
             ipAddress
           );
           results.push({ op_id: op.op_id, status: "applied", record: updated });
+          break;
+        }
+        case "equipment.return_to_owner": {
+          const returned = returnEquipmentToOwner(
+            db,
+            { id: op.entity_id, clientUuid: op.client_uuid },
+            op.payload,
+            actor,
+            ipAddress
+          );
+          results.push({ op_id: op.op_id, status: "applied", record: returned });
           break;
         }
         case "movement.create": {

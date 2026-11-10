@@ -1,6 +1,5 @@
 import { KeyRound, Pencil, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { PageIntro } from "../components/PageIntro";
 import { apiRequest } from "../services/api";
 import type { AuthUser, TiUser } from "../types";
 
@@ -143,19 +142,10 @@ export function UsuariosPage({ users, currentUser, onRefresh }: UsuariosPageProp
 
   return (
     <div className="space-y-5">
-      <PageIntro
-        title="Usuários"
-        purpose="Gerencia as contas da equipe de TI com acesso ao sistema, senhas iniciais e controle de sessões."
-        howTo={[
-          "Preencha o formulário para cadastrar um usuário e escolha se ele deve trocar a senha no primeiro login.",
-          "Clique em Editar para alterar nome, usuário, senha ou exigir troca de senha no próximo acesso.",
-          "Use Desativar ou Revogar sessões para bloquear contas antigas e encerrar acessos ativos na hora."
-        ]}
-      />
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
         <section
-          className="lg:col-span-5 rounded-xl border p-5 shadow-sm space-y-4"
+          className="xl:col-span-5 rounded-xl border p-5 shadow-sm space-y-4"
           style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
         >
           <div className="border-b pb-3" style={{ borderColor: "var(--border)" }}>
@@ -200,7 +190,7 @@ export function UsuariosPage({ users, currentUser, onRefresh }: UsuariosPageProp
               id="u-password"
               type="password"
               required
-              minLength={6}
+              minLength={8}
               autoComplete="new-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -257,7 +247,7 @@ export function UsuariosPage({ users, currentUser, onRefresh }: UsuariosPageProp
       </section>
 
       <section
-        className="lg:col-span-7 rounded-xl border p-5 shadow-sm space-y-4"
+        className="xl:col-span-7 rounded-xl border p-5 shadow-sm space-y-4"
         style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
       >
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b pb-3" style={{ borderColor: "var(--border)" }}>
@@ -382,7 +372,7 @@ export function UsuariosPage({ users, currentUser, onRefresh }: UsuariosPageProp
             </div>
             <div>
               <label className="block text-xs font-medium mb-1">Nova senha (opcional)</label>
-              <input type="password" minLength={6} autoComplete="new-password" value={editing.newPassword} onChange={(e) => setEditing({ ...editing, newPassword: e.target.value })} className="tw-input" />
+              <input type="password" minLength={8} autoComplete="new-password" value={editing.newPassword} onChange={(e) => setEditing({ ...editing, newPassword: e.target.value })} className="tw-input" />
             </div>
             <label className="flex items-center gap-2 text-xs cursor-pointer pt-1">
               <input

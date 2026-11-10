@@ -13,6 +13,7 @@ export function seedInitialData(db: DatabaseSync, env: EnvConfig): void {
     insertSetting.run("app_name", "twCIN", now);
     insertSetting.run("org_name", "Setor de TI", now);
     insertSetting.run("logo_data_url", "", now);
+    insertSetting.run("loan_default_days", "7", now);
 
     if (env.seedAdminUsername && env.seedAdminPassword) {
       const userCountRow = db.prepare("SELECT COUNT(*) AS count FROM users").get() as { count: number };

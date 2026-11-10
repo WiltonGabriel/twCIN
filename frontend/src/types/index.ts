@@ -25,7 +25,8 @@ export type EquipmentCondition =
   | "manutencao"
   | "avaliacao"
   | "emprestado"
-  | "descartado";
+  | "descartado"
+  | "devolvido_dono";
 
 export interface CatalogEquipment {
   id: number;
@@ -45,6 +46,9 @@ export interface CatalogEquipment {
   created_by_name: string;
   updated_by_id: number | null;
   updated_by_name: string;
+  owner_returned_at?: string | null;
+  owner_received_by?: string;
+  owner_returned_by_name?: string;
   created_at: string;
   updated_at: string;
   _pendingSync?: boolean;
@@ -69,6 +73,7 @@ export interface MovementItem {
   status: MovementStatus;
   version: number;
   out_at: string;
+  due_at?: string | null;
   returned_at: string | null;
   registered_by_id: number | null;
   registered_by_name: string;
@@ -121,13 +126,9 @@ export interface PublicSettings {
   app_name: string;
   org_name: string;
   logo_data_url: string;
+  /** Prazo padrão de devolução dos empréstimos, em dias. 0 = sem prazo. */
+  loan_default_days?: number;
 }
 
 export type ThemePreference = "system" | "light" | "dark";
-export type PageKey =
-  | "inicio"
-  | "equipamentos"
-  | "movimentacoes"
-  | "graficos"
-  | "usuarios"
-  | "configuracoes";
+export type PageKey = "inicio" | "equipamentos" | "movimentacoes" | "configuracoes";

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
 import { withTransaction } from "../db/connection.js";
@@ -5,6 +6,7 @@ import { changePasswordSchema, loginSchema, setupSchema } from "../schemas/index
 import { writeAuditLog } from "../security/audit.js";
 import {
   clearSessionCookie,
+  revokeSession,
   setSessionCookie,
   signSessionToken,
   type AuthUser
@@ -19,6 +21,8 @@ export interface AuthRouteDeps {
   loginRateLimitMax?: number;
   requireAuthPendingAllowed: (req: any, reply: any) => Promise<void>;
 }
+
+const DUMMY_PASSWORD_HASH = hashPassword(crypto.randomUUID());
 
 function toPublicAuthUser(user: AuthUser) {
   return {
@@ -135,7 +139,9 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): v
           }
         | undefined;
 
-      if (!row || row.active !== 1 || !verifyPassword(parsed.password, row.password_hash)) {
+      // Sempre calcula o scrypt, mesmo sem usuário, para o tempo de resposta não revelar se ele existe.
+      const passwordOk = verifyPassword(parsed.password, row?.password_hash ?? DUMMY_PASSWORD_HASH);
+      if (!row || row.active !== 1 || !passwordOk) {
         writeAuditLog(db, {
           userId: row?.id ?? null,
           userName: row?.full_name || username,
@@ -253,6 +259,10 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): v
 
   app.post("/api/auth/logout", { preHandler: [requireAuthPendingAllowed] }, async (request, reply) => {
     const user = request.currentUser!;
+    // Antes o logout só apagava o cookie: uma cópia do token continuava válida por 7 dias.
+    if (request.currentSession?.jti) {
+      revokeSession(db, request.currentSession.jti, request.currentSession.exp);
+    }
     clearSessionCookie(reply, cookieSecure);
     writeAuditLog(db, {
       userId: user.id,
@@ -263,6 +273,27 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): v
       summary: `Logout efetuado por ${user.full_name}`,
       ipAddress: request.ip
     });
+    return { ok: true };
+  });
+
+  app.post("/api/auth/logout-all", { preHandler: [requireAuthPendingAllowed] }, async (request, reply) => {
+    const user = request.currentUser!;
+    withTransaction(db, () => {
+      db.prepare("UPDATE users SET token_version = token_version + 1, updated_at = ? WHERE id = ?").run(
+        new Date().toISOString(),
+        user.id
+      );
+      writeAuditLog(db, {
+        userId: user.id,
+        userName: user.full_name,
+        action: "SESSION_REVOKED",
+        entity: "user",
+        entityId: user.id,
+        summary: `${user.full_name} encerrou as sessões em todos os dispositivos`,
+        ipAddress: request.ip
+      });
+    });
+    clearSessionCookie(reply, cookieSecure);
     return { ok: true };
   });
 

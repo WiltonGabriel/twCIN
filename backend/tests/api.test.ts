@@ -237,7 +237,8 @@ describe("twCIN API", () => {
     });
     assert.equal(missingLocRes.statusCode, 400);
 
-    const movRes = await app.inject({
+    // Equipamento em manutenção não pode sair (decisão de produto).
+    const blockedMovRes = await app.inject({
       method: "POST",
       url: "/api/movements",
       headers: { cookie },
@@ -248,7 +249,7 @@ describe("twCIN API", () => {
         install_location: "Balcão Principal"
       }
     });
-    assert.equal(movRes.statusCode, 201);
+    assert.equal(blockedMovRes.statusCode, 400);
 
     // Atualiza situação do equipamento
     const patchEqRes = await app.inject({
@@ -263,6 +264,19 @@ describe("twCIN API", () => {
     assert.equal(patchEqRes.statusCode, 200);
     assert.equal(patchEqRes.json().item.version, 2);
 
+    const movRes = await app.inject({
+      method: "POST",
+      url: "/api/movements",
+      headers: { cookie },
+      payload: {
+        equipment_id: eq.id,
+        equipment_name: eq.name,
+        sector_name: "Recepção",
+        install_location: "Balcão Principal"
+      }
+    });
+    assert.equal(movRes.statusCode, 201);
+
     // Consulta detalhes do equipamento com movimentações vinculadas
     const detailsRes = await app.inject({
       method: "GET",
@@ -270,7 +284,7 @@ describe("twCIN API", () => {
       headers: { cookie }
     });
     assert.equal(detailsRes.statusCode, 200);
-    assert.equal(detailsRes.json().item.condition_status, "disponivel");
+    assert.equal(detailsRes.json().item.condition_status, "emprestado", "situação atualizada pela saída");
     assert.equal(detailsRes.json().movements.length, 1);
 
     const auditRes = await app.inject({
@@ -279,7 +293,8 @@ describe("twCIN API", () => {
       headers: { cookie }
     });
     assert.equal(auditRes.statusCode, 200);
-    assert.equal(auditRes.json().items.length, 2);
+    // CREATE + STATUS_CHANGE manual + STATUS_CHANGE automático da saída
+    assert.equal(auditRes.json().items.length, 3);
   });
 
   it("cria movimentação, registra devolução e garante idempotência e conflito no /api/sync", async () => {
@@ -496,5 +511,385 @@ describe("twCIN API", () => {
     });
     assert.equal(pngValid.statusCode, 200);
     assert.equal(pngValid.json().settings.org_name, "Minha Organização");
+  });
+});
+
+describe("twCIN API — correções da auditoria (fase 1)", () => {
+  let app: FastifyInstance | null = null;
+  let cookie = "";
+
+  async function setup(options?: { loginRateLimitMax?: number }) {
+    const built = await buildApp({
+      env: createTestEnv(),
+      globalRateLimitMax: 1000,
+      loginRateLimitMax: options?.loginRateLimitMax
+    });
+    app = built.app;
+    cookie = await loginAndCompleteFirstPassword(app, "tecnico1", "test-password-123", "tecnico1-nova-senha-2026");
+    return app;
+  }
+
+  async function call(method: "GET" | "POST" | "PATCH", url: string, payload?: unknown) {
+    const res = await app!.inject({ method, url, headers: { cookie }, payload: payload as any });
+    return { status: res.statusCode, body: res.json() };
+  }
+
+  const baseMovement = { equipment_name: "Mouse USB", sector_name: "RH", install_location: "Sala 1" };
+
+  afterEach(async () => {
+    if (app) {
+      await app.close();
+      app = null;
+    }
+  });
+
+  it("rejeita datas inválidas e devolução anterior à saída", async () => {
+    await setup();
+
+    const lixo = await call("POST", "/api/movements", { ...baseMovement, out_at: "aaaaaaaaaa" });
+    assert.equal(lixo.status, 400);
+
+    const mov = await call("POST", "/api/movements", { ...baseMovement, out_at: "2026-11-10T10:00:00.000Z" });
+    assert.equal(mov.status, 201);
+    const id = mov.body.item.id;
+
+    const antes = await call("POST", `/api/movements/${id}/return`, { returned_at: "2026-11-09T10:00:00.000Z" });
+    assert.equal(antes.status, 400);
+
+    const ok = await call("POST", `/api/movements/${id}/return`, { returned_at: "2026-11-10T12:00:00.000Z" });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.item.status, "devolvido");
+
+    const saidaDepois = await call("PATCH", `/api/movements/${id}`, { out_at: "2026-11-11T10:00:00.000Z" });
+    assert.equal(saidaDepois.status, 400);
+  });
+
+  it("impede estados impossíveis na edição de movimentações", async () => {
+    await setup();
+
+    const mov = (await call("POST", "/api/movements", baseMovement)).body.item;
+    await call("POST", `/api/movements/${mov.id}/return`, {});
+
+    const semData = await call("PATCH", `/api/movements/${mov.id}`, { returned_at: null });
+    assert.equal(semData.status, 400);
+
+    const emprestimo = (await call("POST", "/api/movements", { ...baseMovement, equipment_name: "Teclado" })).body.item;
+    const fixoEmEmprestimo = await call("PATCH", `/api/movements/${emprestimo.id}`, {
+      status: "fixo",
+      movement_type: "emprestimo"
+    });
+    assert.equal(fixoEmEmprestimo.status, 400);
+
+    const dataSemDevolucao = await call("PATCH", `/api/movements/${emprestimo.id}`, {
+      returned_at: "2030-01-01T00:00:00.000Z"
+    });
+    assert.equal(dataSemDevolucao.status, 400);
+
+    // Trocar o tipo continua ajustando o status automaticamente (comportamento existente).
+    const virouFixo = await call("PATCH", `/api/movements/${emprestimo.id}`, { movement_type: "instalacao_fixa" });
+    assert.equal(virouFixo.status, 200);
+    assert.equal(virouFixo.body.item.status, "fixo");
+  });
+
+  it("responde 400 (e não 500) para setor ou equipamento inexistente", async () => {
+    await setup();
+
+    const setor = await call("POST", "/api/movements", { ...baseMovement, sector_id: 9999 });
+    assert.equal(setor.status, 400);
+
+    const equipamento = await call("POST", "/api/movements", { ...baseMovement, equipment_id: 9999 });
+    assert.equal(equipamento.status, 400);
+
+    const local = await call("POST", "/api/catalogs/locations", { name: "Sala X", sector_id: 9999 });
+    assert.equal(local.status, 400);
+  });
+
+  it("bloqueia saída de equipamento descartado, inativo ou que já está fora", async () => {
+    await setup();
+
+    const descartado = (
+      await call("POST", "/api/catalogs/equipments", { name: "Notebook Velho", condition_status: "descartado" })
+    ).body.item;
+    const r1 = await call("POST", "/api/movements", {
+      ...baseMovement,
+      equipment_id: descartado.id,
+      equipment_name: descartado.name
+    });
+    assert.equal(r1.status, 400);
+
+    const inativo = (await call("POST", "/api/catalogs/equipments", { name: "Monitor Antigo" })).body.item;
+    await call("PATCH", `/api/catalogs/equipments/${inativo.id}`, { active: false });
+    const r2 = await call("POST", "/api/movements", { ...baseMovement, equipment_id: inativo.id, equipment_name: inativo.name });
+    assert.equal(r2.status, 400);
+
+    const notebook = (await call("POST", "/api/catalogs/equipments", { name: "Notebook", patrimony: "PAT-1" })).body.item;
+    const primeiro = await call("POST", "/api/movements", {
+      ...baseMovement,
+      equipment_id: notebook.id,
+      equipment_name: notebook.name
+    });
+    assert.equal(primeiro.status, 201);
+    assert.equal(primeiro.body.item.patrimony, "PAT-1", "patrimônio herdado do catálogo");
+
+    const segundo = await call("POST", "/api/movements", {
+      ...baseMovement,
+      sector_name: "Financeiro",
+      equipment_id: notebook.id,
+      equipment_name: notebook.name
+    });
+    assert.equal(segundo.status, 409);
+
+    await call("POST", `/api/movements/${primeiro.body.item.id}/return`, {});
+    const depoisDaDevolucao = await call("POST", "/api/movements", {
+      ...baseMovement,
+      equipment_id: notebook.id,
+      equipment_name: notebook.name
+    });
+    assert.equal(depoisDaDevolucao.status, 201);
+
+    // Reabrir a movimentação antiga agora conflita com a nova.
+    const reabrir = await call("PATCH", `/api/movements/${primeiro.body.item.id}`, { status: "ativo" });
+    assert.equal(reabrir.status, 409);
+  });
+
+  it("sincronização: operação inválida não derruba o lote e edições offline seguidas são aplicadas", async () => {
+    await setup();
+
+    const lote = await call("POST", "/api/sync", {
+      operations: [
+        { op_id: "ok", type: "sector.create", payload: { name: "Financeiro" } },
+        { op_id: "ruim", type: "movement.create", payload: { equipment_name: "X", sector_name: "Y", install_location: "" } }
+      ]
+    });
+    assert.equal(lote.status, 200);
+    assert.deepEqual(
+      lote.body.results.map((r: { op_id: string; status: string }) => [r.op_id, r.status]),
+      [
+        ["ok", "applied"],
+        ["ruim", "error"]
+      ]
+    );
+
+    const mov = (await call("POST", "/api/movements", baseMovement)).body.item;
+    // O frontend agora incrementa a versão local a cada operação enfileirada.
+    const seguidas = await call("POST", "/api/sync", {
+      operations: [
+        { op_id: "e1", type: "movement.update", entity_id: mov.id, payload: { notes: "edição 1", expected_version: mov.version } },
+        { op_id: "e2", type: "movement.return", entity_id: mov.id, payload: { expected_version: mov.version + 1 } }
+      ]
+    });
+    assert.deepEqual(
+      seguidas.body.results.map((r: { status: string }) => r.status),
+      ["applied", "applied"]
+    );
+  });
+
+  it("não sugere setores desativados vindos do histórico", async () => {
+    await setup();
+
+    const setor = (await call("POST", "/api/catalogs/sectors", { name: "Almoxarifado" })).body.item;
+    await call("POST", "/api/movements", { ...baseMovement, sector_name: "Almoxarifado", sector_id: setor.id });
+    await call("PATCH", `/api/catalogs/sectors/${setor.id}`, { active: false });
+
+    const sugestoes = await call("GET", "/api/catalogs/suggestions");
+    assert.equal(
+      sugestoes.body.sectors.some((s: { name: string }) => s.name === "Almoxarifado"),
+      false
+    );
+  });
+
+  it("situação do equipamento acompanha saída, troca de tipo e devolução", async () => {
+    await setup();
+
+    const eq = (await call("POST", "/api/catalogs/equipments", { name: "Projetor", patrimony: "PJ-1" })).body.item;
+    const mov = (
+      await call("POST", "/api/movements", { ...baseMovement, equipment_id: eq.id, equipment_name: eq.name })
+    ).body.item;
+    const situacao = async () => (await call("GET", `/api/catalogs/equipments/${eq.id}`)).body.item.condition_status;
+
+    assert.equal(await situacao(), "emprestado");
+
+    // Edição manual da situação com movimentação aberta é bloqueada.
+    const manual = await call("PATCH", `/api/catalogs/equipments/${eq.id}`, { condition_status: "disponivel" });
+    assert.equal(manual.status, 409);
+    const desativar = await call("PATCH", `/api/catalogs/equipments/${eq.id}`, { active: false });
+    assert.equal(desativar.status, 409);
+
+    await call("PATCH", `/api/movements/${mov.id}`, { movement_type: "instalacao_fixa" });
+    assert.equal(await situacao(), "em_uso");
+
+    // Desfazer a instalação fixa devolve o equipamento.
+    const desfeita = await call("POST", `/api/movements/${mov.id}/return`, {});
+    assert.equal(desfeita.status, 200);
+    assert.equal(await situacao(), "disponivel");
+
+    // "Emprestado" não pode ser definido à mão.
+    const emprestadoManual = await call("PATCH", `/api/catalogs/equipments/${eq.id}`, { condition_status: "emprestado" });
+    assert.equal(emprestadoManual.status, 400);
+  });
+
+  it("bloqueia empréstimo de equipamento em manutenção ou avaliação", async () => {
+    await setup();
+    for (const condition_status of ["manutencao", "avaliacao"]) {
+      const eq = (await call("POST", "/api/catalogs/equipments", { name: `Item ${condition_status}`, condition_status })).body
+        .item;
+      const res = await call("POST", "/api/movements", { ...baseMovement, equipment_id: eq.id, equipment_name: eq.name });
+      assert.equal(res.status, 400, condition_status);
+    }
+  });
+
+  it("aplica prazo padrão de devolução e lista atrasados", async () => {
+    await setup();
+
+    const settings = await call("PATCH", "/api/settings", { loan_default_days: 3 });
+    assert.equal(settings.body.settings.loan_default_days, 3);
+
+    const outAt = "2026-01-10T12:00:00.000Z";
+    const comPrazo = (await call("POST", "/api/movements", { ...baseMovement, out_at: outAt })).body.item;
+    assert.equal(comPrazo.due_at, "2026-01-13T12:00:00.000Z");
+
+    const semPrazo = (await call("POST", "/api/movements", { ...baseMovement, equipment_name: "Cabo", due_at: null })).body
+      .item;
+    assert.equal(semPrazo.due_at, null);
+
+    const fixa = (
+      await call("POST", "/api/movements", { ...baseMovement, equipment_name: "Rack", movement_type: "instalacao_fixa" })
+    ).body.item;
+    assert.equal(fixa.due_at, null, "instalação fixa não tem prazo");
+
+    const prazoAntes = await call("POST", "/api/movements", {
+      ...baseMovement,
+      out_at: outAt,
+      due_at: "2026-01-09T00:00:00.000Z"
+    });
+    assert.equal(prazoAntes.status, 400);
+
+    const atrasados = await call("GET", "/api/movements?overdue=true");
+    assert.deepEqual(
+      atrasados.body.items.map((m: { id: number }) => m.id),
+      [comPrazo.id]
+    );
+  });
+
+  it("devolve equipamento de terceiro ao dono", async () => {
+    await setup();
+
+    const proprio = (await call("POST", "/api/catalogs/equipments", { name: "Switch" })).body.item;
+    const naoTerceiro = await call("POST", `/api/catalogs/equipments/${proprio.id}/return-to-owner`, {
+      received_by: "Maria"
+    });
+    assert.equal(naoTerceiro.status, 400);
+
+    const terceiro = (
+      await call("POST", "/api/catalogs/equipments", { name: "Notebook do Financeiro", ownership_type: "terceiro" })
+    ).body.item;
+    const mov = (
+      await call("POST", "/api/movements", { ...baseMovement, equipment_id: terceiro.id, equipment_name: terceiro.name })
+    ).body.item;
+
+    const comMovimentacaoAberta = await call("POST", `/api/catalogs/equipments/${terceiro.id}/return-to-owner`, {
+      received_by: "Maria"
+    });
+    assert.equal(comMovimentacaoAberta.status, 409);
+
+    await call("POST", `/api/movements/${mov.id}/return`, {});
+    const ok = await call("POST", `/api/catalogs/equipments/${terceiro.id}/return-to-owner`, {
+      received_by: "Maria",
+      notes: "Consertado"
+    });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.item.condition_status, "devolvido_dono");
+    assert.equal(ok.body.item.active, 0);
+    assert.equal(ok.body.item.owner_received_by, "Maria");
+
+    const depois = await call("POST", "/api/movements", {
+      ...baseMovement,
+      equipment_id: terceiro.id,
+      equipment_name: terceiro.name
+    });
+    assert.equal(depois.status, 400, "não pode mais sair");
+  });
+
+  it("logout invalida o token copiado e logout-all encerra todas as sessões", async () => {
+    await setup();
+    const tokenCopiado = cookie;
+
+    const logout = await app!.inject({ method: "POST", url: "/api/auth/logout", headers: { cookie: tokenCopiado } });
+    assert.equal(logout.statusCode, 200);
+    const reuso = await app!.inject({ method: "GET", url: "/api/auth/me", headers: { cookie: tokenCopiado } });
+    assert.equal(reuso.statusCode, 401, "token não vale mais depois do logout");
+
+    const login1 = await app!.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: "tecnico1", password: "tecnico1-nova-senha-2026" }
+    });
+    const login2 = await app!.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: "tecnico1", password: "tecnico1-nova-senha-2026" }
+    });
+    const c1 = extractCookie(login1.headers["set-cookie"]);
+    const c2 = extractCookie(login2.headers["set-cookie"]);
+    await app!.inject({ method: "POST", url: "/api/auth/logout-all", headers: { cookie: c1 } });
+    const outro = await app!.inject({ method: "GET", url: "/api/auth/me", headers: { cookie: c2 } });
+    assert.equal(outro.statusCode, 401);
+  });
+
+  it("exige senha de no mínimo 8 caracteres também ao criar usuário", async () => {
+    await setup();
+    const curta = await call("POST", "/api/users", { full_name: "Fulano", username: "fulano", password: "123456" });
+    assert.equal(curta.status, 400);
+  });
+
+  it("pagina a auditoria por cursor", async () => {
+    await setup();
+    for (let i = 0; i < 5; i++) {
+      await call("POST", "/api/catalogs/sectors", { name: `Setor ${i}` });
+    }
+    const p1 = await call("GET", "/api/audit?entity=catalog_sector&limit=2");
+    assert.equal(p1.body.items.length, 2);
+    assert.ok(p1.body.next_before_id);
+    const p2 = await call("GET", `/api/audit?entity=catalog_sector&limit=2&before_id=${p1.body.next_before_id}`);
+    const p3 = await call("GET", `/api/audit?entity=catalog_sector&limit=2&before_id=${p2.body.next_before_id}`);
+    const ids = [...p1.body.items, ...p2.body.items, ...p3.body.items].map((i: { id: number }) => i.id);
+    assert.equal(new Set(ids).size, 5);
+    assert.equal(p3.body.next_before_id, null);
+  });
+
+  it("gera backup do banco somente com a senha correta", async () => {
+    await setup();
+    const errada = await app!.inject({
+      method: "POST",
+      url: "/api/backup",
+      headers: { cookie },
+      payload: { password: "senha-errada" }
+    });
+    assert.equal(errada.statusCode, 400);
+
+    const ok = await app!.inject({
+      method: "POST",
+      url: "/api/backup",
+      headers: { cookie },
+      payload: { password: "tecnico1-nova-senha-2026" }
+    });
+    assert.equal(ok.statusCode, 200);
+    assert.equal(ok.rawPayload.subarray(0, 15).toString(), "SQLite format 3");
+  });
+
+  it("não deixa X-Forwarded-For forjado contornar o rate limit de login por padrão", async () => {
+    await setup({ loginRateLimitMax: 3 });
+
+    const statuses: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const res = await app!.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        headers: { "x-forwarded-for": `10.0.0.${i}` },
+        payload: { username: "tecnico1", password: "errada" }
+      });
+      statuses.push(res.statusCode);
+    }
+    assert.ok(statuses.includes(429), `esperado 429, recebido ${statuses.join(",")}`);
   });
 });

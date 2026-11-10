@@ -20,13 +20,18 @@ export function registerMovementRoutes(
       status?: string;
       includeFinished?: string;
       sector?: string;
+      sector_id?: string;
       search?: string;
+      overdue?: string;
     };
+    const sectorId = query.sector_id !== undefined ? Number(query.sector_id) : undefined;
     const items = listMovements(db, {
       status: query.status,
       includeFinished: query.includeFinished === "true",
       sector: query.sector,
-      search: query.search
+      sectorId: sectorId !== undefined && Number.isInteger(sectorId) && sectorId > 0 ? sectorId : undefined,
+      search: query.search,
+      overdue: query.overdue === "true"
     });
     return { items };
   });

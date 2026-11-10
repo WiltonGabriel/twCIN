@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { PageIntro } from "../components/PageIntro";
 import type { CatalogEquipment, EquipmentCondition, EquipmentOwnership, MovementItem } from "../types";
 
 interface GraficosPageProps {
@@ -13,7 +12,8 @@ const CONDITION_META: Array<{ key: EquipmentCondition; label: string; color: str
   { key: "emprestado", label: "Emprestado", color: "#0284c7" },
   { key: "manutencao", label: "Manutenção", color: "var(--warn)" },
   { key: "avaliacao", label: "Avaliação", color: "#d97706" },
-  { key: "descartado", label: "Descartado", color: "var(--cin-red)" }
+  { key: "descartado", label: "Descartado", color: "var(--cin-red)" },
+  { key: "devolvido_dono", label: "Devolvido ao dono", color: "var(--text-muted)" }
 ];
 
 const OWNERSHIP_META: Array<{ key: EquipmentOwnership; label: string; color: string }> = [
@@ -196,15 +196,6 @@ export function GraficosPage({ equipments, movements }: GraficosPageProps) {
 
   return (
     <div className="space-y-5">
-      <PageIntro
-        title="Gráficos e Indicadores"
-        purpose="Exibe a distribuição do inventário e o volume de empréstimos e devoluções para identificar gargalos rapidamente."
-        howTo={[
-          "Selecione o período no filtro (7, 30, 90 dias ou Tudo) para recalcular os rankings de saída.",
-          "Observe os gráficos de rosca e barras para comparar itens próprios, estoque, terceiros e manutenção.",
-          "Acompanhe quais setores, locais e equipamentos concentram mais movimentações."
-        ]}
-      />
 
       {/* Header + Period Filter */}
       <section

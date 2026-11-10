@@ -1,9 +1,10 @@
+import type http from "node:http";
 import type { DatabaseSync } from "node:sqlite";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyHttpOptions, type FastifyInstance } from "fastify";
 import { ZodError } from "zod";
 import type { EnvConfig } from "./config/env.js";
 import { openDatabase } from "./db/connection.js";
@@ -11,6 +12,7 @@ import { runMigrations } from "./db/migrations.js";
 import { seedInitialData } from "./db/seed.js";
 import { registerAuditRoutes } from "./routes/audit.routes.js";
 import { registerAuthRoutes } from "./routes/auth.routes.js";
+import { registerBackupRoutes } from "./routes/backup.routes.js";
 import { registerCatalogRoutes } from "./routes/catalogs.routes.js";
 import { registerMovementRoutes } from "./routes/movements.routes.js";
 import { registerSettingsRoutes } from "./routes/settings.routes.js";
@@ -36,10 +38,13 @@ export async function buildApp(options: BuildAppOptions): Promise<{
   runMigrations(db);
   seedInitialData(db, env);
 
-  const app = Fastify({
+  const serverOptions: FastifyHttpOptions<http.Server> = {
     logger: false,
-    trustProxy: true
-  });
+    // Antes era sempre true: qualquer cliente podia forjar X-Forwarded-For, trocar o próprio IP
+    // a cada tentativa e escapar do rate limit de login (e falsificar o IP gravado na auditoria).
+    trustProxy: env.trustProxy ?? false
+  };
+  const app = Fastify(serverOptions);
 
   await app.register(helmet, {
     contentSecurityPolicy: false
@@ -109,6 +114,7 @@ export async function buildApp(options: BuildAppOptions): Promise<{
   registerAuditRoutes(app, db, requireAuth);
   registerSettingsRoutes(app, db, requireAuth);
   registerSyncRoutes(app, db, requireAuth);
+  registerBackupRoutes(app, db, requireAuth);
 
   app.addHook("onClose", async () => {
     db.close();

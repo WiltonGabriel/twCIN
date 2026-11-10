@@ -7,6 +7,16 @@ export interface PublicSettings {
   app_name: string;
   org_name: string;
   logo_data_url: string;
+  /** Prazo padrão de devolução dos empréstimos, em dias. 0 = sem prazo. */
+  loan_default_days: number;
+}
+
+export const DEFAULT_LOAN_DAYS = 7;
+
+function parseLoanDays(raw: string | undefined): number {
+  if (raw === undefined) return DEFAULT_LOAN_DAYS;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 && n <= 365 ? n : DEFAULT_LOAN_DAYS;
 }
 
 export function getPublicSettings(db: DatabaseSync): PublicSettings {
@@ -18,7 +28,8 @@ export function getPublicSettings(db: DatabaseSync): PublicSettings {
   return {
     app_name: map.get("app_name") || "twCIN",
     org_name: map.get("org_name") || "Setor de TI",
-    logo_data_url: map.get("logo_data_url") || ""
+    logo_data_url: map.get("logo_data_url") || "",
+    loan_default_days: parseLoanDays(map.get("loan_default_days"))
   };
 }
 
@@ -46,16 +57,25 @@ export function updatePublicSettings(
     if (input.logo_data_url !== undefined) {
       upsert.run("logo_data_url", input.logo_data_url, now);
     }
+    if (input.loan_default_days !== undefined) {
+      upsert.run("loan_default_days", String(input.loan_default_days), now);
+    }
 
     const after = getPublicSettings(db);
+    const summarize = (s: PublicSettings) => ({
+      app_name: s.app_name,
+      org_name: s.org_name,
+      has_logo: Boolean(s.logo_data_url),
+      loan_default_days: s.loan_default_days
+    });
     writeAuditLog(db, {
       userId: actor.id,
       userName: actor.full_name,
       action: "UPDATE",
       entity: "app_settings",
       summary: `Configurações da organização atualizadas (${after.app_name} / ${after.org_name})`,
-      before: { app_name: before.app_name, org_name: before.org_name, has_logo: Boolean(before.logo_data_url) },
-      after: { app_name: after.app_name, org_name: after.org_name, has_logo: Boolean(after.logo_data_url) },
+      before: summarize(before),
+      after: summarize(after),
       ipAddress
     });
 

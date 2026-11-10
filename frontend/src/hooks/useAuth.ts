@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  clearLocalDataForLogout,
   getCachedSettings,
   getCachedUser,
-  offlineDb,
   saveCachedSettings,
   saveCachedUser
 } from "../offline/db";
 import { runSyncCycle } from "../offline/syncEngine";
-import { apiRequest, isNetworkError } from "../services/api";
+import { apiRequest, ApiError, isNetworkError } from "../services/api";
 import type { AuthUser, PublicSettings } from "../types";
 
 export function useAuth() {
@@ -46,7 +46,10 @@ export function useAuth() {
       setUser(data.user);
       await saveCachedUser(data.user);
     } catch (err) {
-      if (isNetworkError(err)) {
+      // Só 401/403 significam sessão inválida. Antes qualquer erro (ex.: 429 do rate limit ou 500)
+      // apagava o usuário em cache e mandava para o login.
+      const sessionRejected = err instanceof ApiError && (err.status === 401 || err.status === 403);
+      if (isNetworkError(err) || !sessionRejected) {
         const cached = await getCachedUser();
         setUser(cached);
       } else {
@@ -77,7 +80,7 @@ export function useAuth() {
     setUser(data.user);
     await saveCachedUser(data.user);
     await loadPublicSettings();
-    void runSyncCycle();
+    void runSyncCycle(data.user.id);
     return data.user;
   };
 
@@ -90,7 +93,7 @@ export function useAuth() {
     setUser(data.user);
     await saveCachedUser(data.user);
     if (!data.user.must_change_password) {
-      void runSyncCycle();
+      void runSyncCycle(data.user.id);
     }
     return data.user;
   };
@@ -105,11 +108,17 @@ export function useAuth() {
     });
     setUser(data.user);
     await saveCachedUser(data.user);
-    void runSyncCycle();
+    void runSyncCycle(data.user.id);
     return data.user;
   };
 
+  /**
+   * Encerra a sessão e apaga deste aparelho os dados da organização e as operações do usuário.
+   * Quem chama deve confirmar com a pessoa antes, caso existam operações pendentes
+   * (ver getPendingSyncCount): elas são perdidas.
+   */
   const logout = async (): Promise<void> => {
+    const userId = user?.id;
     try {
       await apiRequest("/api/auth/logout", { method: "POST", body: JSON.stringify({}) });
     } catch {
@@ -117,7 +126,9 @@ export function useAuth() {
     }
     setUser(null);
     await saveCachedUser(null);
-    await offlineDb.syncQueue.clear();
+    if (userId !== undefined) {
+      await clearLocalDataForLogout(userId);
+    }
   };
 
   return {

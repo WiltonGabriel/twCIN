@@ -6,14 +6,14 @@ import { useAuth } from "./hooks/useAuth";
 import { usePwaInstall } from "./hooks/usePwaInstall";
 import { useSyncData } from "./hooks/useSyncData";
 import { useTheme } from "./hooks/useTheme";
-import { ConfiguracoesPage } from "./pages/ConfiguracoesPage";
+import { getPendingSyncCount } from "./offline/syncEngine";
+import { apiRequest } from "./services/api";
+import { ConfiguracoesPage, type SettingsTab } from "./pages/ConfiguracoesPage";
 import { EquipamentosPage } from "./pages/EquipamentosPage";
 import { ForcePasswordChangePage } from "./pages/ForcePasswordChangePage";
-import { GraficosPage } from "./pages/GraficosPage";
 import { InicioPage } from "./pages/InicioPage";
 import { LoginPage } from "./pages/LoginPage";
 import { MovimentacoesPage } from "./pages/MovimentacoesPage";
-import { UsuariosPage } from "./pages/UsuariosPage";
 import type { PageKey } from "./types";
 
 export function App() {
@@ -32,6 +32,11 @@ export function App() {
   const { preference, systemTheme, setPreference } = useTheme();
   const pwa = usePwaInstall();
   const [activePage, setActivePage] = useState<PageKey>("inicio");
+  // Seção inicial de Configurações + chave para remontar quando abrimos uma seção específica.
+  const [settingsTarget, setSettingsTarget] = useState<{ tab: SettingsTab | undefined; key: number }>({
+    tab: undefined,
+    key: 0
+  });
   const [pdfPayload, setPdfPayload] = useState<PdfPayload | null>(null);
   const [auditTarget, setAuditTarget] = useState<{
     entity: string;
@@ -42,6 +47,37 @@ export function App() {
   const readyUser = user && !user.must_change_password ? user : null;
   const syncData = useSyncData(readyUser, () => setUser(null), setSettings);
 
+  const navigate = (page: PageKey) => {
+    if (page === "configuracoes") setSettingsTarget((s) => ({ tab: undefined, key: s.key + 1 }));
+    setActivePage(page);
+  };
+
+  const openSettings = (tab: SettingsTab) => {
+    setSettingsTarget((s) => ({ tab, key: s.key + 1 }));
+    setActivePage("configuracoes");
+  };
+
+  const handleLogout = async () => {
+    if (user) {
+      const pending = await getPendingSyncCount(user.id);
+      if (
+        pending > 0 &&
+        !window.confirm(
+          `Há ${pending} alteração(ões) feita(s) offline que ainda não chegaram ao servidor. ` +
+            "Se você sair agora, elas serão perdidas. Deseja sair mesmo assim?"
+        )
+      ) {
+        return;
+      }
+    }
+    await logout();
+  };
+
+  const handleLogoutAll = async () => {
+    await apiRequest("/api/auth/logout-all", { method: "POST", body: JSON.stringify({}) });
+    await logout();
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center text-sm" style={{ color: "var(--text-muted)" }}>
@@ -51,14 +87,7 @@ export function App() {
   }
 
   if (!user) {
-    return (
-      <LoginPage
-        needsSetup={needsSetup}
-        settings={settings}
-        onLogin={login}
-        onSetupInitial={setupInitial}
-      />
-    );
+    return <LoginPage needsSetup={needsSetup} settings={settings} onLogin={login} onSetupInitial={setupInitial} />;
   }
 
   if (user.must_change_password) {
@@ -67,7 +96,7 @@ export function App() {
         user={user}
         settings={settings}
         onChangePassword={changePassword}
-        onLogout={() => void logout()}
+        onLogout={() => void handleLogout()}
       />
     );
   }
@@ -77,20 +106,22 @@ export function App() {
       user={user}
       settings={settings}
       activePage={activePage}
-      onNavigate={setActivePage}
-      onLogout={() => void logout()}
+      onNavigate={navigate}
+      onLogout={() => void handleLogout()}
       online={syncData.online}
       pendingCount={syncData.pendingCount}
+      failedCount={syncData.failedOps.length}
       syncing={syncData.syncing}
       syncNotice={syncData.syncNotice}
       onClearSyncNotice={syncData.clearSyncNotice}
       onSyncNow={() => void syncData.syncNow()}
+      onOpenSync={() => openSettings("sincronizacao")}
     >
       {activePage === "inicio" && (
         <InicioPage
           equipments={syncData.equipments}
           movements={syncData.movements}
-          onNavigate={setActivePage}
+          onNavigate={navigate}
           onQuickUpdateEquipment={syncData.updateEquipment}
           onQuickReturnMovement={syncData.returnMovement}
           onPrintMovement={(item) => setPdfPayload({ kind: "movement", item })}
@@ -103,17 +134,12 @@ export function App() {
           movements={syncData.movements}
           onCreate={syncData.createEquipment}
           onUpdate={syncData.updateEquipment}
-          onOpenAudit={(item) =>
-            setAuditTarget({
-              entity: "catalog_equipment",
-              entityId: item.id,
-              title: item.name
-            })
-          }
+          onReturnToOwner={syncData.returnEquipmentToOwner}
+          onOpenAudit={(item) => setAuditTarget({ entity: "catalog_equipment", entityId: item.id, title: item.name })}
           onPrintReport={(list) =>
             setPdfPayload({
               kind: "equipments_report",
-              title: "Equipamentos sob Responsabilidade do TI",
+              title: "Equipamentos sob responsabilidade do TI",
               items: list,
               issuedBy: user.full_name
             })
@@ -124,58 +150,52 @@ export function App() {
       {activePage === "movimentacoes" && (
         <MovimentacoesPage
           items={syncData.movements}
+          equipments={syncData.equipments}
           sectors={syncData.sectors}
-          locations={syncData.locations}
           suggestions={syncData.suggestions}
+          loanDefaultDays={settings.loan_default_days ?? 7}
           onCreate={syncData.createMovement}
           onUpdate={syncData.updateMovement}
           onReturn={syncData.returnMovement}
           onCreateSector={syncData.createSector}
-          onRefreshCatalogs={syncData.syncNow}
           onPrintSingle={(item) => setPdfPayload({ kind: "movement", item })}
-          onPrintList={(list, title = "Movimentações de Equipamentos") =>
-            setPdfPayload({
-              kind: "movements_report",
-              title,
-              items: list,
-              issuedBy: user.full_name
-            })
+          onPrintList={(list, title = "Movimentações de equipamentos") =>
+            setPdfPayload({ kind: "movements_report", title, items: list, issuedBy: user.full_name })
           }
           onOpenAudit={(item) =>
-            setAuditTarget({
-              entity: "movement",
-              entityId: item.id,
-              title: `${item.document_code} — ${item.equipment_name}`
-            })
+            setAuditTarget({ entity: "movement", entityId: item.id, title: `${item.document_code} — ${item.equipment_name}` })
           }
-        />
-      )}
-
-      {activePage === "graficos" && (
-        <GraficosPage
-          equipments={syncData.equipments}
-          movements={syncData.movements}
-        />
-      )}
-
-      {activePage === "usuarios" && (
-        <UsuariosPage
-          users={syncData.users}
-          currentUser={user}
-          onRefresh={syncData.syncNow}
         />
       )}
 
       {activePage === "configuracoes" && (
         <ConfiguracoesPage
+          key={settingsTarget.key}
+          initialTab={settingsTarget.tab}
           user={user}
           settings={settings}
           preference={preference}
           systemTheme={systemTheme}
           pwa={pwa}
+          users={syncData.users}
+          equipments={syncData.equipments}
+          movements={syncData.movements}
+          sectors={syncData.sectors}
+          locations={syncData.locations}
+          suggestions={syncData.suggestions}
+          online={syncData.online}
+          syncing={syncData.syncing}
+          pendingCount={syncData.pendingCount}
+          failedOps={syncData.failedOps}
+          onSyncNow={() => void syncData.syncNow()}
+          onRetryFailed={syncData.retryFailed}
+          onDiscardFailed={syncData.discardFailed}
+          onCreateSector={syncData.createSector}
+          onRefresh={syncData.syncNow}
           onChangeTheme={setPreference}
           onChangePassword={changePassword}
           onSettingsUpdated={(updated) => setSettings(updated)}
+          onLogoutAll={handleLogoutAll}
         />
       )}
 

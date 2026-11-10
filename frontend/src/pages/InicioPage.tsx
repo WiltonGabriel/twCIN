@@ -1,7 +1,18 @@
-import { ArrowRightLeft, BarChart3, Check, Package, Search, Wrench } from "lucide-react";
-import { useState } from "react";
+import { AlertTriangle, ArrowRight, Check, Package, Printer, Search, Wrench } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { PageIntro } from "../components/PageIntro";
 import type { CatalogEquipment, MovementItem, PageKey } from "../types";
+import {
+  CONDITION_LABELS,
+  conditionStyle,
+  daysOverdue,
+  formatDate,
+  formatDateTime,
+  isOverdue,
+  movementStatusLabel,
+  movementStatusStyle
+} from "../types/labels";
+import { GraficosPage } from "./GraficosPage";
 
 interface InicioPageProps {
   equipments: CatalogEquipment[];
@@ -15,20 +26,6 @@ interface InicioPageProps {
   onPrintMovement: (item: MovementItem) => void;
 }
 
-const CONDITION_LABELS: Record<CatalogEquipment["condition_status"], string> = {
-  disponivel: "Disponível",
-  em_uso: "Em uso",
-  manutencao: "Manutenção",
-  avaliacao: "Avaliação",
-  emprestado: "Emprestado",
-  descartado: "Descartado"
-};
-
-function daysSince(iso: string): number {
-  const ms = Date.now() - new Date(iso).getTime();
-  return Math.max(0, Math.floor(ms / (1000 * 60 * 60 * 24)));
-}
-
 export function InicioPage({
   equipments,
   movements,
@@ -37,403 +34,302 @@ export function InicioPage({
   onQuickReturnMovement,
   onPrintMovement
 }: InicioPageProps) {
+  const [view, setView] = useState<"geral" | "indicadores">("geral");
   const [search, setSearch] = useState("");
+  const [returning, setReturning] = useState<MovementItem | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const d = dialogRef.current;
+    if (!d) return;
+    if (returning && !d.open) d.showModal();
+    else if (!returning && d.open) d.close();
+  }, [returning]);
+
+  useEffect(() => {
+    const d = dialogRef.current;
+    if (!d) return;
+    const handler = () => setReturning(null);
+    d.addEventListener("close", handler);
+    return () => d.removeEventListener("close", handler);
+  }, []);
 
   const activeEquipments = equipments.filter((e) => e.active === 1);
-  const attentionEquipments = activeEquipments.filter(
-    (e) => e.condition_status === "manutencao" || e.condition_status === "avaliacao"
-  );
-  const stockCount = activeEquipments.filter((e) => e.ownership_type === "estoque").length;
-  const activeLoans = movements.filter((m) => m.status === "ativo");
-  const recentMovements = movements.slice(0, 6);
+  const attention = activeEquipments.filter((e) => e.condition_status === "manutencao" || e.condition_status === "avaliacao");
+  const openLoans = movements.filter((m) => m.status === "ativo");
+  const overdue = openLoans.filter((m) => isOverdue(m)).sort((a, b) => (a.due_at ?? "").localeCompare(b.due_at ?? ""));
+  const dueSoon = openLoans
+    .filter((m) => !isOverdue(m) && m.due_at && new Date(m.due_at).getTime() - Date.now() < 2 * 24 * 60 * 60 * 1000)
+    .sort((a, b) => (a.due_at ?? "").localeCompare(b.due_at ?? ""));
+  const available = activeEquipments.filter((e) => e.condition_status === "disponivel").length;
 
   const q = search.trim().toLowerCase();
   const matchedEquipments = q
     ? activeEquipments
-        .filter(
-          (e) =>
-            e.name.toLowerCase().includes(q) ||
-            (e.patrimony || "").toLowerCase().includes(q) ||
-            e.origin.toLowerCase().includes(q) ||
-            e.received_from.toLowerCase().includes(q) ||
-            e.reason.toLowerCase().includes(q)
+        .filter((e) => [e.name, e.patrimony || "", e.category, e.received_from].join(" ").toLowerCase().includes(q))
+        .slice(0, 8)
+    : [];
+  const matchedMovements = q
+    ? movements
+        .filter((m) =>
+          [m.document_code, m.equipment_name, m.patrimony, m.sector_name, m.install_location, m.received_by]
+            .join(" ")
+            .toLowerCase()
+            .includes(q)
         )
         .slice(0, 8)
     : [];
 
-  const matchedMovements = q
-    ? movements
-        .filter(
-          (m) =>
-            m.document_code.toLowerCase().includes(q) ||
-            m.equipment_name.toLowerCase().includes(q) ||
-            m.patrimony.toLowerCase().includes(q) ||
-            m.sector_name.toLowerCase().includes(q) ||
-            m.install_location.toLowerCase().includes(q) ||
-            m.received_by.toLowerCase().includes(q)
-        )
-        .slice(0, 8)
-    : [];
+  const confirmReturn = async () => {
+    if (!returning) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onQuickReturnMovement(returning);
+      setReturning(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao registrar devolução.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const markAvailable = async (eq: CatalogEquipment) => {
+    setError(null);
+    try {
+      await onQuickUpdateEquipment(eq, { condition_status: "disponivel" });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao atualizar equipamento.");
+    }
+  };
+
+  const loanRow = (m: MovementItem) => (
+    <li key={m.client_uuid} className="tw-card px-3 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2" style={{ backgroundColor: "var(--bg)" }}>
+      <div className="min-w-0">
+        <div className="text-sm font-semibold truncate">
+          <span className="font-mono text-xs mr-1.5" style={{ color: "var(--text-muted)" }}>{m.document_code}</span>
+          {m.equipment_name}
+        </div>
+        <div className="text-xs" style={{ color: isOverdue(m) ? "var(--cin-red)" : "var(--text-muted)" }}>
+          {m.sector_name}
+          {m.received_by ? ` · ${m.received_by}` : ""}
+          {m.due_at ? (isOverdue(m) ? ` · ${daysOverdue(m)} dia(s) de atraso` : ` · até ${formatDate(m.due_at)}`) : ""}
+        </div>
+      </div>
+      <div className="flex gap-1.5 shrink-0">
+        <button type="button" className="tw-btn tw-btn-sm" onClick={() => onPrintMovement(m)} aria-label={`PDF de ${m.document_code}`}>
+          <Printer className="w-3.5 h-3.5" aria-hidden="true" /> PDF
+        </button>
+        <button type="button" className="tw-btn tw-btn-sm tw-btn-ok" onClick={() => setReturning(m)}>
+          <Check className="w-3.5 h-3.5" aria-hidden="true" /> Registrar devolução
+        </button>
+      </div>
+    </li>
+  );
 
   return (
     <div className="space-y-5">
       <PageIntro
-        title="Início — Acesso Rápido"
-        purpose="Centraliza a visão rápida do setor de TI com atalhos para as tarefas do dia a dia e busca imediata."
+        title="Início"
+        purpose="Visão rápida do TI: o que está fora, o que está atrasado, o que está em manutenção e indicadores do acervo."
         howTo={[
-          "Busque por equipamento, patrimônio, setor ou código para localizar itens na hora.",
-          "Acompanhe equipamentos em manutenção ou avaliação e mude a situação com um clique.",
-          "Confira as movimentações em aberto em Fora de para marcar devolução ou gerar o PDF."
+          "Busque por equipamento, patrimônio, setor, código ou pessoa.",
+          "Acompanhe atrasados e registre devoluções direto daqui.",
+          "Abra \"Indicadores\" para ver os gráficos do acervo e das movimentações."
         ]}
+        actions={
+          <div role="tablist" aria-label="Visões do início" className="flex gap-1 p-1 rounded-lg border" style={{ borderColor: "var(--border)" }}>
+            {(["geral", "indicadores"] as const).map((v) => (
+              <button
+                key={v}
+                type="button"
+                role="tab"
+                aria-selected={view === v}
+                onClick={() => setView(v)}
+                className="px-3 py-1.5 rounded-md text-sm font-medium cursor-pointer"
+                style={view === v ? { backgroundColor: "var(--brand)", color: "var(--brand-fg)" } : { color: "var(--text-muted)" }}
+              >
+                {v === "geral" ? "Visão geral" : "Indicadores"}
+              </button>
+            ))}
+          </div>
+        }
       />
 
-      {/* Top Quick Actions & Unified Search */}
-      <section
-        className="rounded-xl border p-5 shadow-sm space-y-4"
-        style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-      >
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-          <div>
-            <h2 className="text-base font-semibold">Atalhos e Busca Rápida</h2>
+      {view === "indicadores" ? (
+        <GraficosPage equipments={equipments} movements={movements} />
+      ) : (
+        <>
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--text-muted)" }} aria-hidden="true" />
+            <input
+              type="search"
+              aria-label="Consulta rápida"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar equipamento, patrimônio, setor, código ou pessoa"
+              className="tw-input"
+              style={{ paddingLeft: "2.5rem" }}
+            />
           </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => onNavigate("movimentacoes")}
-              className="inline-flex items-center gap-1.5 min-h-[42px] px-4 rounded-lg text-sm font-semibold cursor-pointer"
-              style={{ backgroundColor: "var(--brand)", color: "var(--brand-fg)" }}
-            >
-              <ArrowRightLeft className="w-4 h-4" aria-hidden="true" />
-              Nova movimentação
-            </button>
-            <button
-              type="button"
-              onClick={() => onNavigate("equipamentos")}
-              className="inline-flex items-center gap-1.5 min-h-[42px] px-4 rounded-lg text-sm font-medium border cursor-pointer"
-              style={{ borderColor: "var(--border)" }}
-            >
-              <Package className="w-4 h-4" aria-hidden="true" />
-              Novo equipamento
-            </button>
-            <button
-              type="button"
-              onClick={() => onNavigate("graficos")}
-              className="inline-flex items-center gap-1.5 min-h-[42px] px-4 rounded-lg text-sm font-medium border cursor-pointer"
-              style={{ borderColor: "var(--border)" }}
-            >
-              <BarChart3 className="w-4 h-4" aria-hidden="true" />
-              Gráficos
-            </button>
-          </div>
-        </div>
 
-        <search className="relative flex items-center">
-          <Search
-            className="w-4 h-4 absolute left-3 pointer-events-none"
-            style={{ color: "var(--text-muted)" }}
-            aria-hidden="true"
-          />
-          <input
-            type="search"
-            aria-label="Consulta rápida"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Consultar equipamento, patrimônio, setor, local ou pessoa..."
-            className="tw-input pl-9"
-          />
-        </search>
-
-        {q && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-            <div
-              className="rounded-lg border p-3.5 space-y-2"
-              style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}
-            >
-              <h2 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
-                Equipamentos ({matchedEquipments.length})
-              </h2>
-              {matchedEquipments.length === 0 ? (
-                <p className="text-xs" style={{ color: "var(--text-muted)" }}>Nenhum equipamento encontrado.</p>
-              ) : (
-                <ul className="space-y-1.5 text-xs">
-                  {matchedEquipments.map((eq) => (
-                    <li
-                      key={eq.client_uuid}
-                      className="p-2 rounded border flex items-center justify-between gap-2"
-                      style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-                    >
-                      <div className="min-w-0">
-                        <strong className="text-sm">{eq.name}</strong>
-                        {eq.patrimony && <span className="ml-2 font-mono">{eq.patrimony}</span>}
-                        <div style={{ color: "var(--text-muted)" }}>
-                          {CONDITION_LABELS[eq.condition_status]}
-                          {eq.origin ? ` • ${eq.origin}` : ""}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => onNavigate("equipamentos")}
-                        className="px-2 py-1 rounded border cursor-pointer shrink-0"
-                        style={{ borderColor: "var(--border)" }}
-                      >
-                        Abrir
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
+          {error && (
+            <div role="alert" className="px-3 py-2 rounded-lg text-sm border" style={{ backgroundColor: "var(--cin-red-soft)", borderColor: "var(--cin-red)", color: "var(--cin-red)" }}>
+              {error}
             </div>
+          )}
 
-            <div
-              className="rounded-lg border p-3.5 space-y-2"
-              style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}
-            >
-              <h2 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
-                Movimentações ({matchedMovements.length})
-              </h2>
-              {matchedMovements.length === 0 ? (
-                <p className="text-xs" style={{ color: "var(--text-muted)" }}>Nenhuma movimentação encontrada.</p>
-              ) : (
-                <ul className="space-y-1.5 text-xs">
-                  {matchedMovements.map((m) => (
-                    <li
-                      key={m.client_uuid}
-                      className="p-2 rounded border flex items-center justify-between gap-2"
-                      style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-                    >
-                      <div className="min-w-0">
-                        <span className="font-mono mr-1.5" style={{ color: "var(--text-muted)" }}>
-                          {m.document_code}
+          {q ? (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              <section className="tw-card p-4 space-y-2">
+                <h2 className="text-sm font-semibold">Equipamentos ({matchedEquipments.length})</h2>
+                {matchedEquipments.length === 0 ? (
+                  <p className="text-sm" style={{ color: "var(--text-muted)" }}>Nenhum equipamento encontrado.</p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {matchedEquipments.map((e) => (
+                      <li key={e.client_uuid} className="tw-card px-3 py-2 flex items-center justify-between gap-2" style={{ backgroundColor: "var(--bg)" }}>
+                        <span className="text-sm">
+                          <strong>{e.name}</strong>
+                          {e.patrimony && <span className="font-mono text-xs ml-1.5" style={{ color: "var(--text-muted)" }}>{e.patrimony}</span>}
                         </span>
-                        <strong className="text-sm">{m.equipment_name}</strong>
-                        <div style={{ color: "var(--text-muted)" }}>
-                          {m.sector_name} — {m.install_location}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => onPrintMovement(m)}
-                        className="px-2 py-1 rounded border cursor-pointer shrink-0"
-                        style={{ borderColor: "var(--border)" }}
-                      >
-                        PDF
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
+                        <span className="tw-badge" style={conditionStyle(e.condition_status)}>{CONDITION_LABELS[e.condition_status]}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+              <section className="tw-card p-4 space-y-2">
+                <h2 className="text-sm font-semibold">Movimentações ({matchedMovements.length})</h2>
+                {matchedMovements.length === 0 ? (
+                  <p className="text-sm" style={{ color: "var(--text-muted)" }}>Nenhuma movimentação encontrada.</p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {matchedMovements.map((m) => (
+                      <li key={m.client_uuid} className="tw-card px-3 py-2 flex items-center justify-between gap-2" style={{ backgroundColor: "var(--bg)" }}>
+                        <span className="text-sm min-w-0">
+                          <span className="font-mono text-xs mr-1.5" style={{ color: "var(--text-muted)" }}>{m.document_code}</span>
+                          <strong>{m.equipment_name}</strong>
+                          <span className="block text-xs" style={{ color: "var(--text-muted)" }}>{m.sector_name} · {formatDateTime(m.out_at)}</span>
+                        </span>
+                        <span className="tw-badge shrink-0" style={movementStatusStyle(m)}>{movementStatusLabel(m)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <button type="button" className="tw-stat text-left cursor-pointer" onClick={() => onNavigate("equipamentos")}>
+                  <span className="tw-stat-label">Disponíveis no TI</span>
+                  <strong style={{ color: "var(--ok)" }}>{available}</strong>
+                </button>
+                <button type="button" className="tw-stat text-left cursor-pointer" onClick={() => onNavigate("movimentacoes")}>
+                  <span className="tw-stat-label">Emprestados</span>
+                  <strong style={{ color: "var(--brand)" }}>{openLoans.length}</strong>
+                </button>
+                <button type="button" className="tw-stat text-left cursor-pointer" onClick={() => onNavigate("movimentacoes")}>
+                  <span className="tw-stat-label">Atrasados</span>
+                  <strong style={{ color: overdue.length ? "var(--cin-red)" : undefined }}>{overdue.length}</strong>
+                </button>
+                <button type="button" className="tw-stat text-left cursor-pointer" onClick={() => onNavigate("equipamentos")}>
+                  <span className="tw-stat-label">Manutenção / avaliação</span>
+                  <strong style={{ color: attention.length ? "var(--warn)" : undefined }}>{attention.length}</strong>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                <section className="tw-card p-4 space-y-3" aria-labelledby="home-overdue">
+                  <div className="flex items-center justify-between gap-2">
+                    <h2 id="home-overdue" className="text-sm font-semibold flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4" style={{ color: overdue.length ? "var(--cin-red)" : "var(--text-muted)" }} aria-hidden="true" />
+                      Atrasados e vencendo
+                    </h2>
+                    <button type="button" className="text-xs font-semibold inline-flex items-center gap-1 cursor-pointer" style={{ color: "var(--brand)" }} onClick={() => onNavigate("movimentacoes")}>
+                      Ver todos <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+                    </button>
+                  </div>
+                  {overdue.length + dueSoon.length === 0 ? (
+                    <p className="text-sm" style={{ color: "var(--text-muted)" }}>Nenhum empréstimo atrasado ou vencendo nos próximos 2 dias.</p>
+                  ) : (
+                    <ul className="space-y-1.5">{[...overdue, ...dueSoon].slice(0, 8).map(loanRow)}</ul>
+                  )}
+                </section>
+
+                <section className="tw-card p-4 space-y-3" aria-labelledby="home-attention">
+                  <div className="flex items-center justify-between gap-2">
+                    <h2 id="home-attention" className="text-sm font-semibold flex items-center gap-2">
+                      <Wrench className="w-4 h-4" style={{ color: "var(--warn)" }} aria-hidden="true" />
+                      Em manutenção ou avaliação
+                    </h2>
+                    <button type="button" className="text-xs font-semibold inline-flex items-center gap-1 cursor-pointer" style={{ color: "var(--brand)" }} onClick={() => onNavigate("equipamentos")}>
+                      Ver todos <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+                    </button>
+                  </div>
+                  {attention.length === 0 ? (
+                    <p className="text-sm" style={{ color: "var(--text-muted)" }}>Nenhum equipamento em manutenção ou avaliação.</p>
+                  ) : (
+                    <ul className="space-y-1.5">
+                      {attention.slice(0, 8).map((eq) => (
+                        <li key={eq.client_uuid} className="tw-card px-3 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2" style={{ backgroundColor: "var(--bg)" }}>
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold flex items-center gap-2">
+                              <span className="tw-badge" style={conditionStyle(eq.condition_status)}>{CONDITION_LABELS[eq.condition_status]}</span>
+                              <span className="truncate">{eq.name}</span>
+                            </div>
+                            <div className="text-xs" style={{ color: "var(--text-muted)" }}>
+                              {eq.ownership_type === "terceiro" && eq.received_from ? `Recebido de ${eq.received_from}` : eq.patrimony || "Sem patrimônio"}
+                              {eq.reason ? ` · ${eq.reason}` : ""}
+                            </div>
+                          </div>
+                          <button type="button" className="tw-btn tw-btn-sm shrink-0" onClick={() => void markAvailable(eq)}>
+                            <Package className="w-3.5 h-3.5" aria-hidden="true" /> Marcar disponível
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              </div>
+
+              <section className="tw-card p-4 space-y-3" aria-labelledby="home-open">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 id="home-open" className="text-sm font-semibold">Emprestados agora ({openLoans.length})</h2>
+                  <button type="button" className="text-xs font-semibold inline-flex items-center gap-1 cursor-pointer" style={{ color: "var(--brand)" }} onClick={() => onNavigate("movimentacoes")}>
+                    Gerenciar <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
+                  </button>
+                </div>
+                {openLoans.length === 0 ? (
+                  <p className="text-sm" style={{ color: "var(--text-muted)" }}>Nenhum equipamento emprestado.</p>
+                ) : (
+                  <ul className="grid grid-cols-1 lg:grid-cols-2 gap-1.5">{openLoans.slice(0, 10).map(loanRow)}</ul>
+                )}
+              </section>
+            </>
+          )}
+        </>
+      )}
+
+      <dialog ref={dialogRef} aria-labelledby="home-return-title" className="m-auto w-[min(94vw,440px)] rounded-xl p-5 shadow-xl">
+        {returning && (
+          <div className="space-y-4">
+            <h2 id="home-return-title" className="text-base font-semibold">Registrar devolução?</h2>
+            <p className="text-sm">
+              <strong>{returning.equipment_name}</strong> ({returning.document_code}) volta do setor <strong>{returning.sector_name}</strong> e fica disponível no TI.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button type="button" className="tw-btn" onClick={() => setReturning(null)}>Cancelar</button>
+              <button type="button" className="tw-btn tw-btn-ok" disabled={busy} onClick={() => void confirmReturn()}>
+                {busy ? "Salvando..." : "Confirmar"}
+              </button>
             </div>
           </div>
         )}
-      </section>
-
-      {/* Summary Strip */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <div className="rounded-xl border p-4" style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}>
-          <span className="text-xs" style={{ color: "var(--text-muted)" }}>Equipamentos ativos</span>
-          <div className="text-2xl font-bold mt-1">{activeEquipments.length}</div>
-        </div>
-        <div className="rounded-xl border p-4" style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}>
-          <span className="text-xs" style={{ color: "var(--text-muted)" }}>Em manutenção / avaliação</span>
-          <div className="text-2xl font-bold mt-1" style={{ color: attentionEquipments.length > 0 ? "var(--warn)" : undefined }}>
-            {attentionEquipments.length}
-          </div>
-        </div>
-        <div className="rounded-xl border p-4" style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}>
-          <span className="text-xs" style={{ color: "var(--text-muted)" }}>Em estoque</span>
-          <div className="text-2xl font-bold mt-1">{stockCount}</div>
-        </div>
-        <div className="rounded-xl border p-4" style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}>
-          <span className="text-xs" style={{ color: "var(--text-muted)" }}>Fora de (empréstimos)</span>
-          <div className="text-2xl font-bold mt-1" style={{ color: activeLoans.length > 0 ? "var(--brand)" : undefined }}>
-            {activeLoans.length}
-          </div>
-        </div>
-      </div>
-
-      {/* Main Operational Split */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-        {/* Equipment in IT Maintenance / Evaluation */}
-        <section
-          className="lg:col-span-6 rounded-xl border p-5 shadow-sm space-y-3"
-          style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-        >
-          <div className="flex items-center justify-between border-b pb-3" style={{ borderColor: "var(--border)" }}>
-            <div className="flex items-center gap-2">
-              <Wrench className="w-4 h-4" style={{ color: "var(--warn)" }} aria-hidden="true" />
-              <h2 className="text-base font-semibold">No TI para manutenção / avaliação</h2>
-            </div>
-            <button
-              type="button"
-              onClick={() => onNavigate("equipamentos")}
-              className="text-xs font-semibold cursor-pointer"
-              style={{ color: "var(--brand)" }}
-            >
-              Ver todos
-            </button>
-          </div>
-
-          {attentionEquipments.length === 0 ? (
-            <p className="text-sm py-3" style={{ color: "var(--text-muted)" }}>
-              Nenhum equipamento aguardando manutenção ou avaliação.
-            </p>
-          ) : (
-            <div className="space-y-2.5">
-              {attentionEquipments.map((eq) => {
-                const days = daysSince(eq.updated_at);
-                return (
-                  <article
-                    key={eq.client_uuid}
-                    className="rounded-xl border p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                    style={{
-                      backgroundColor: "var(--bg)",
-                      borderColor: days >= 5 ? "var(--cin-red)" : "var(--border)"
-                    }}
-                  >
-                    <div className="space-y-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span
-                          className="px-2 py-0.5 rounded text-xs font-semibold"
-                          style={{ backgroundColor: "var(--warn-soft)", color: "var(--warn)" }}
-                        >
-                          {CONDITION_LABELS[eq.condition_status]}
-                        </span>
-                        <strong className="text-sm">{eq.name}</strong>
-                        {eq.patrimony && (
-                          <span className="font-mono text-xs" style={{ color: "var(--text-muted)" }}>
-                            {eq.patrimony}
-                          </span>
-                        )}
-                      </div>
-                      {eq.reason && <p className="text-xs">{eq.reason}</p>}
-                      <div className="text-xs" style={{ color: "var(--text-muted)" }}>
-                        {eq.origin ? `Origem: ${eq.origin}` : "Origem não informada"}
-                        {eq.received_from ? ` (${eq.received_from})` : ""} •{" "}
-                        {days === 0 ? "Hoje" : `${days}d`}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void onQuickUpdateEquipment(eq, { condition_status: "disponivel" })
-                      }
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer shrink-0"
-                      style={{ backgroundColor: "var(--ok)", color: "#ffffff" }}
-                    >
-                      Marcar disponível
-                    </button>
-                  </article>
-                );
-              })}
-            </div>
-          )}
-        </section>
-
-        {/* Active Outgoing Loans + Recent Activity */}
-        <div className="lg:col-span-6 space-y-5">
-          <section
-            className="rounded-xl border p-5 shadow-sm space-y-3"
-            style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-          >
-            <div className="flex items-center justify-between border-b pb-3" style={{ borderColor: "var(--border)" }}>
-              <h2 className="text-base font-semibold">Fora de ({activeLoans.length})</h2>
-              <button
-                type="button"
-                onClick={() => onNavigate("movimentacoes")}
-                className="text-xs font-semibold cursor-pointer"
-                style={{ color: "var(--brand)" }}
-              >
-                Gerenciar
-              </button>
-            </div>
-
-            {activeLoans.length === 0 ? (
-              <p className="text-sm py-3" style={{ color: "var(--text-muted)" }}>
-                Nenhum empréstimo aguardando devolução.
-              </p>
-            ) : (
-              <div className="space-y-2.5">
-                {activeLoans.slice(0, 6).map((m) => (
-                  <article
-                    key={m.client_uuid}
-                    className="rounded-xl border p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
-                    style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}
-                  >
-                    <div className="space-y-0.5 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-mono text-xs" style={{ color: "var(--text-muted)" }}>
-                          {m.document_code}
-                        </span>
-                        <strong className="text-sm">{m.equipment_name}</strong>
-                      </div>
-                      <div className="text-xs" style={{ color: "var(--text-muted)" }}>
-                        {m.sector_name} — {m.install_location}
-                        {m.received_by ? ` • ${m.received_by}` : ""}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => onPrintMovement(m)}
-                        className="px-2.5 py-1.5 rounded-lg text-xs border cursor-pointer"
-                        style={{ borderColor: "var(--border)" }}
-                      >
-                        PDF
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void onQuickReturnMovement(m)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold cursor-pointer"
-                        style={{ backgroundColor: "var(--ok)", color: "#ffffff" }}
-                      >
-                        <Check className="w-3.5 h-3.5" aria-hidden="true" />
-                        Devolvido
-                      </button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section
-            className="rounded-xl border p-5 shadow-sm space-y-3"
-            style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-          >
-            <h2 className="text-base font-semibold border-b pb-3" style={{ borderColor: "var(--border)" }}>
-              Últimos registros de movimentação
-            </h2>
-            {recentMovements.length === 0 ? (
-              <p className="text-sm py-2" style={{ color: "var(--text-muted)" }}>
-                Nenhuma movimentação registrada ainda.
-              </p>
-            ) : (
-              <ul className="space-y-2 text-xs">
-                {recentMovements.map((m) => (
-                  <li
-                    key={m.client_uuid}
-                    className="p-2.5 rounded-lg border flex items-center justify-between gap-2"
-                    style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}
-                  >
-                    <div className="min-w-0">
-                      <span className="font-mono mr-1.5" style={{ color: "var(--text-muted)" }}>
-                        {m.document_code}
-                      </span>
-                      <strong>{m.equipment_name}</strong>
-                      <span style={{ color: "var(--text-muted)" }}>
-                        {" "}→ {m.sector_name} ({m.install_location})
-                      </span>
-                    </div>
-                    <span className="shrink-0" style={{ color: "var(--text-muted)" }}>
-                      {new Date(m.out_at).toLocaleString("pt-BR")}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        </div>
-      </div>
+      </dialog>
     </div>
   );
 }
