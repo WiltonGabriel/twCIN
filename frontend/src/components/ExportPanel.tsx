@@ -1,6 +1,6 @@
 import { Database, FileSpreadsheet, Upload } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { apiRequest, ApiError, readFileAsBase64 } from "../services/api";
+import { apiFetch, apiRequest, ApiError, readFileAsBase64 } from "../services/api";
 import type { CatalogEquipment, MovementItem } from "../types";
 import { CONDITION_LABELS, OWNERSHIP_LABELS, movementStatusLabel } from "../types/labels";
 import { OnlineOnlyNotice } from "./OnlineOnlyNotice";
@@ -117,10 +117,8 @@ export function ExportPanel({ equipments, movements, online, canBackup, onBackup
     setBusy(true);
     setMessage(null);
     try {
-      const res = await fetch("/api/backup", {
+      const res = await apiFetch("/api/backup", {
         method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password })
       });
       if (!res.ok) {

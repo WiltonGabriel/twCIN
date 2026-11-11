@@ -28,8 +28,15 @@ function createTestEnv(overrides?: Partial<EnvConfig>): EnvConfig {
 
 function extractCookie(setCookieHeader: string | string[] | undefined): string {
   assert.ok(setCookieHeader, "Cookie de sessão deve ser definido");
-  const raw = Array.isArray(setCookieHeader) ? setCookieHeader[0] : setCookieHeader;
-  return raw.split(";")[0];
+  const list = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+  return list.map((raw) => raw.split(";")[0]).join("; ");
+}
+
+function authHeaders(cookieHeader: string): Record<string, string> {
+  const csrfMatch = cookieHeader.match(/(?:^|;\s*)twcin_csrf=([^;]+)/);
+  return csrfMatch
+    ? { cookie: cookieHeader, "x-csrf-token": decodeURIComponent(csrfMatch[1]) }
+    : { cookie: cookieHeader };
 }
 
 async function loginAndCompleteFirstPassword(
@@ -50,7 +57,7 @@ async function loginAndCompleteFirstPassword(
     const changeRes = await app.inject({
       method: "POST",
       url: "/api/auth/change-password",
-      headers: { cookie: firstCookie },
+      headers: authHeaders(firstCookie),
       payload: { current_password: currentPassword, new_password: newPassword }
     });
     assert.equal(changeRes.statusCode, 200);
@@ -142,7 +149,7 @@ describe("twCIN API", () => {
     const blockedEquip = await app.inject({
       method: "GET",
       url: "/api/catalogs/equipments",
-      headers: { cookie: initialCookie }
+      headers: authHeaders(initialCookie)
     });
     assert.equal(blockedEquip.statusCode, 403);
     assert.equal(blockedEquip.json().code, "PASSWORD_CHANGE_REQUIRED");
@@ -150,7 +157,7 @@ describe("twCIN API", () => {
     const samePassRes = await app.inject({
       method: "POST",
       url: "/api/auth/change-password",
-      headers: { cookie: initialCookie },
+      headers: authHeaders(initialCookie),
       payload: { current_password: "test-password-123", new_password: "test-password-123" }
     });
     assert.equal(samePassRes.statusCode, 400);
@@ -158,7 +165,7 @@ describe("twCIN API", () => {
     const changeRes = await app.inject({
       method: "POST",
       url: "/api/auth/change-password",
-      headers: { cookie: initialCookie },
+      headers: authHeaders(initialCookie),
       payload: { current_password: "test-password-123", new_password: "nova-senha-segura-99" }
     });
     assert.equal(changeRes.statusCode, 200);
@@ -168,14 +175,14 @@ describe("twCIN API", () => {
     const staleRes = await app.inject({
       method: "GET",
       url: "/api/auth/me",
-      headers: { cookie: initialCookie }
+      headers: authHeaders(initialCookie)
     });
     assert.equal(staleRes.statusCode, 401);
 
     const allowedEquip = await app.inject({
       method: "GET",
       url: "/api/catalogs/equipments",
-      headers: { cookie: freshCookie }
+      headers: authHeaders(freshCookie)
     });
     assert.equal(allowedEquip.statusCode, 200);
 
@@ -211,7 +218,7 @@ describe("twCIN API", () => {
     const createEqRes = await app.inject({
       method: "POST",
       url: "/api/catalogs/equipments",
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: {
         name: "Notebook Recepção 02",
         ownership_type: "terceiro",
@@ -233,7 +240,7 @@ describe("twCIN API", () => {
     const missingLocRes = await app.inject({
       method: "POST",
       url: "/api/movements",
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: {
         equipment_id: eq.id,
         equipment_name: eq.name,
@@ -247,7 +254,7 @@ describe("twCIN API", () => {
     const blockedMovRes = await app.inject({
       method: "POST",
       url: "/api/movements",
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: {
         equipment_id: eq.id,
         equipment_name: eq.name,
@@ -261,7 +268,7 @@ describe("twCIN API", () => {
     const patchEqRes = await app.inject({
       method: "PATCH",
       url: `/api/catalogs/equipments/${eq.id}`,
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: {
         condition_status: "disponivel",
         expected_version: eq.version
@@ -273,7 +280,7 @@ describe("twCIN API", () => {
     const movRes = await app.inject({
       method: "POST",
       url: "/api/movements",
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: {
         equipment_id: eq.id,
         equipment_name: eq.name,
@@ -287,7 +294,7 @@ describe("twCIN API", () => {
     const detailsRes = await app.inject({
       method: "GET",
       url: `/api/catalogs/equipments/${eq.id}`,
-      headers: { cookie }
+      headers: authHeaders(cookie)
     });
     assert.equal(detailsRes.statusCode, 200);
     assert.equal(detailsRes.json().item.condition_status, "emprestado", "situação atualizada pela saída");
@@ -296,7 +303,7 @@ describe("twCIN API", () => {
     const auditRes = await app.inject({
       method: "GET",
       url: `/api/audit?entity=catalog_equipment&entity_id=${eq.id}`,
-      headers: { cookie }
+      headers: authHeaders(cookie)
     });
     assert.equal(auditRes.statusCode, 200);
     // CREATE + STATUS_CHANGE manual + STATUS_CHANGE automático da saída
@@ -318,7 +325,7 @@ describe("twCIN API", () => {
     const syncRes1 = await app.inject({
       method: "POST",
       url: "/api/sync",
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: {
         operations: [
           {
@@ -345,7 +352,7 @@ describe("twCIN API", () => {
     const syncResDup = await app.inject({
       method: "POST",
       url: "/api/sync",
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: {
         operations: [
           {
@@ -368,7 +375,7 @@ describe("twCIN API", () => {
     const retRes = await app.inject({
       method: "POST",
       url: `/api/movements/${createdMov.id}/return`,
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: {}
     });
     assert.equal(retRes.statusCode, 200);
@@ -378,7 +385,7 @@ describe("twCIN API", () => {
     const syncConflictRes = await app.inject({
       method: "POST",
       url: "/api/sync",
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: {
         operations: [
           {
@@ -399,7 +406,7 @@ describe("twCIN API", () => {
     const syncSectorRes = await app.inject({
       method: "POST",
       url: "/api/sync",
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: {
         operations: [
           {
@@ -446,7 +453,7 @@ describe("twCIN API", () => {
     const createNoForceRes = await app.inject({
       method: "POST",
       url: "/api/users",
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: {
         full_name: "Técnico Dois",
         username: "tecnico2",
@@ -469,7 +476,7 @@ describe("twCIN API", () => {
     const revokeRes = await app.inject({
       method: "POST",
       url: `/api/users/${user2Id}/revoke-sessions`,
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: {}
     });
     assert.equal(revokeRes.statusCode, 200);
@@ -477,14 +484,14 @@ describe("twCIN API", () => {
     const afterRevoke = await app.inject({
       method: "GET",
       url: "/api/catalogs/equipments",
-      headers: { cookie: cookie2 }
+      headers: authHeaders(cookie2)
     });
     assert.equal(afterRevoke.statusCode, 401);
 
     const disableRes = await app.inject({
       method: "PATCH",
       url: `/api/users/${user2Id}`,
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: { active: false }
     });
     assert.equal(disableRes.statusCode, 200);
@@ -499,7 +506,7 @@ describe("twCIN API", () => {
     const svgReject = await app.inject({
       method: "PATCH",
       url: "/api/settings",
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: {
         logo_data_url: "data:image/svg+xml;base64,PHN2Zz48c2NyaXB0PmFsZXJ0KDEpPC9zY3JpcHQ+PC9zdmc+"
       }
@@ -509,7 +516,7 @@ describe("twCIN API", () => {
     const pngValid = await app.inject({
       method: "PATCH",
       url: "/api/settings",
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: {
         app_name: "twCIN Custom",
         org_name: "Minha Organização",
@@ -533,7 +540,7 @@ describe("twCIN API", () => {
     const invalidColor = await app.inject({
       method: "PATCH",
       url: "/api/settings",
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: { brand_color: "red" }
     });
     assert.equal(invalidColor.statusCode, 400);
@@ -541,7 +548,7 @@ describe("twCIN API", () => {
     const svgBgReject = await app.inject({
       method: "PATCH",
       url: "/api/settings",
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: { bg_image_data_url: "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" }
     });
     assert.equal(svgBgReject.statusCode, 400);
@@ -564,7 +571,7 @@ describe("twCIN API — correções da auditoria (fase 1)", () => {
   }
 
   async function call(method: "GET" | "POST" | "PATCH", url: string, payload?: unknown) {
-    const res = await app!.inject({ method, url, headers: { cookie }, payload: payload as any });
+    const res = await app!.inject({ method, url, headers: authHeaders(cookie), payload: payload as any });
     return { status: res.statusCode, body: res.json() };
   }
 
@@ -848,9 +855,9 @@ describe("twCIN API — correções da auditoria (fase 1)", () => {
     await setup();
     const tokenCopiado = cookie;
 
-    const logout = await app!.inject({ method: "POST", url: "/api/auth/logout", headers: { cookie: tokenCopiado } });
+    const logout = await app!.inject({ method: "POST", url: "/api/auth/logout", headers: authHeaders(tokenCopiado) });
     assert.equal(logout.statusCode, 200);
-    const reuso = await app!.inject({ method: "GET", url: "/api/auth/me", headers: { cookie: tokenCopiado } });
+    const reuso = await app!.inject({ method: "GET", url: "/api/auth/me", headers: authHeaders(tokenCopiado) });
     assert.equal(reuso.statusCode, 401, "token não vale mais depois do logout");
 
     const login1 = await app!.inject({
@@ -865,7 +872,7 @@ describe("twCIN API — correções da auditoria (fase 1)", () => {
     });
     const c1 = extractCookie(login1.headers["set-cookie"]);
     const c2 = extractCookie(login2.headers["set-cookie"]);
-    await app!.inject({ method: "POST", url: "/api/auth/logout-all", headers: { cookie: c1 } });
+    await app!.inject({ method: "POST", url: "/api/auth/logout-all", headers: authHeaders(c1) });
     const outro = await app!.inject({ method: "GET", url: "/api/auth/me", headers: { cookie: c2 } });
     assert.equal(outro.statusCode, 401);
   });
@@ -896,7 +903,7 @@ describe("twCIN API — correções da auditoria (fase 1)", () => {
     const errada = await app!.inject({
       method: "POST",
       url: "/api/backup",
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: { password: "senha-errada" }
     });
     assert.equal(errada.statusCode, 400);
@@ -904,7 +911,7 @@ describe("twCIN API — correções da auditoria (fase 1)", () => {
     const ok = await app!.inject({
       method: "POST",
       url: "/api/backup",
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: { password: "tecnico1-nova-senha-2026" }
     });
     assert.equal(ok.statusCode, 200);
@@ -1016,7 +1023,7 @@ describe("twCIN API — correções da auditoria (fase 1)", () => {
     const eqRes = await app!.inject({
       method: "POST",
       url: "/api/catalogs/equipments",
-      headers: { cookie: techCookie },
+      headers: authHeaders(techCookie),
       payload: { name: "Cabo HDMI" }
     });
     assert.equal(eqRes.statusCode, 201);
@@ -1029,7 +1036,7 @@ describe("twCIN API — correções da auditoria (fase 1)", () => {
       ["PATCH", "/api/settings", { org_name: "Outro" }],
       ["POST", "/api/backup", { password: "senha-campo-2026" }]
     ] as const) {
-      const blocked = await app!.inject({ method, url, headers: { cookie: techCookie }, payload });
+      const blocked = await app!.inject({ method, url, headers: authHeaders(techCookie), payload });
       assert.equal(blocked.statusCode, 403, `${method} ${url}`);
     }
   });
@@ -1082,7 +1089,7 @@ describe("twCIN API — correções da auditoria (fase 1)", () => {
     const backupRes = await app!.inject({
       method: "POST",
       url: "/api/backup",
-      headers: { cookie },
+      headers: authHeaders(cookie),
       payload: { password: "tecnico1-nova-senha-2026" }
     });
     assert.equal(backupRes.statusCode, 200);
@@ -1377,5 +1384,75 @@ describe("twCIN API — correções da auditoria (fase 1)", () => {
         blocker.close((err) => (err ? reject(err) : resolve()));
       });
     }
+  });
+
+  it("bloqueia rotas mutáveis autenticadas sem X-CSRF-Token válido ou com cookie forjado", async () => {
+    await setup();
+    const sessionOnly = cookie
+      .split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith("twcin_session="))!;
+    assert.ok(sessionOnly);
+
+    const noHeader = await app!.inject({
+      method: "POST",
+      url: "/api/catalogs/sectors",
+      headers: { cookie },
+      payload: { name: "Sem CSRF" }
+    });
+    assert.equal(noHeader.statusCode, 403);
+    assert.equal(noHeader.json().code, "CSRF_INVALID");
+
+    const invalidHeader = await app!.inject({
+      method: "PATCH",
+      url: "/api/settings",
+      headers: { cookie, "x-csrf-token": "token-invalido" },
+      payload: { org_name: "Invasão" }
+    });
+    assert.equal(invalidHeader.statusCode, 403);
+    assert.equal(invalidHeader.json().code, "CSRF_INVALID");
+
+    const forgedUnsigned = `${"a".repeat(48)}.${"b".repeat(64)}`;
+    const cookieTossing = await app!.inject({
+      method: "POST",
+      url: "/api/backup",
+      headers: {
+        cookie: `${sessionOnly}; twcin_csrf=${forgedUnsigned}`,
+        "x-csrf-token": forgedUnsigned
+      },
+      payload: { password: "tecnico1-nova-senha-2026" }
+    });
+    assert.equal(cookieTossing.statusCode, 403);
+    assert.equal(cookieTossing.json().code, "CSRF_INVALID");
+
+    // Reemissão via /api/auth/csrf para sessão existente funciona normalmente
+    const csrfRes = await app!.inject({
+      method: "GET",
+      url: "/api/auth/csrf",
+      headers: { cookie: sessionOnly }
+    });
+    assert.equal(csrfRes.statusCode, 200);
+    const csrfToken = csrfRes.json().csrf_token as string;
+    assert.ok(csrfToken.includes("."));
+
+    const allowed = await app!.inject({
+      method: "POST",
+      url: "/api/catalogs/sectors",
+      headers: {
+        cookie: `${sessionOnly}; twcin_csrf=${csrfToken}`,
+        "x-csrf-token": csrfToken
+      },
+      payload: { name: "Com CSRF" }
+    });
+    assert.equal(allowed.statusCode, 201);
+
+    const logoutRes = await app!.inject({
+      method: "POST",
+      url: "/api/auth/logout",
+      headers: authHeaders(cookie)
+    });
+    assert.equal(logoutRes.statusCode, 200);
+    const setCookies = ([] as string[]).concat(logoutRes.headers["set-cookie"] || []);
+    assert.ok(setCookies.some((c) => c.startsWith("twcin_csrf=;")));
   });
 });

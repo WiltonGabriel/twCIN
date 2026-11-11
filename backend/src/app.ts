@@ -21,6 +21,7 @@ import { registerSettingsRoutes } from "./routes/settings.routes.js";
 import { registerSyncRoutes } from "./routes/sync.routes.js";
 import { registerUserRoutes } from "./routes/users.routes.js";
 import { createAuthGuard } from "./security/auth.js";
+import { registerCsrfProtection } from "./security/csrf.js";
 import { AppError } from "./services/errors.js";
 
 export interface BuildAppOptions {
@@ -77,11 +78,15 @@ export async function buildApp(options: BuildAppOptions): Promise<{
   await app.register(cors, {
     delegator: (req, callback) => {
       const reqOrigin = req.headers.origin;
+      const corsBase = {
+        credentials: true,
+        allowedHeaders: ["Content-Type", "X-CSRF-Token"]
+      };
       if (!reqOrigin) {
-        return callback(null, { origin: false, credentials: true });
+        return callback(null, { origin: false, ...corsBase });
       }
       if (configuredOrigins.includes(reqOrigin)) {
-        return callback(null, { origin: true, credentials: true });
+        return callback(null, { origin: true, ...corsBase });
       }
       // Quando o próprio backend serve o frontend (Docker / Windows Server em rede local),
       // aceita chamadas da mesma origem/Host sem depender de pré-cadastrar o IP do servidor.
@@ -94,17 +99,18 @@ export async function buildApp(options: BuildAppOptions): Promise<{
               : undefined;
           const reqHost = (forwardedHost || req.headers.host || "").trim();
           if (reqHost && parsedOrigin.host.toLowerCase() === reqHost.toLowerCase()) {
-            return callback(null, { origin: true, credentials: true });
+            return callback(null, { origin: true, ...corsBase });
           }
         } catch {
           // Ignora Origin inválido
         }
       }
-      return callback(null, { origin: false, credentials: true });
+      return callback(null, { origin: false, ...corsBase });
     }
   });
 
   await app.register(cookie);
+  registerCsrfProtection(app, env.jwtSecret);
 
   await app.register(rateLimit, {
     global: true,

@@ -1,6 +1,6 @@
 # Referência da API
 
-Todas as rotas — exceto `/api/health`, `/api/settings/public`, `/api/auth/status`, `/api/auth/setup`, `/api/auth/login` e `/api/backup/restore-initial` (apenas antes do setup inicial) — exigem um cookie de sessão `HttpOnly` válido (`twcin_session`).
+Todas as rotas — exceto `/api/health`, `/api/settings/public`, `/api/auth/csrf`, `/api/auth/status`, `/api/auth/setup`, `/api/auth/login` e `/api/backup/restore-initial` (apenas antes do setup inicial) — exigem um cookie de sessão `HttpOnly` válido (`twcin_session`). Requisições mutáveis autenticadas (`POST`, `PUT`, `PATCH`, `DELETE`) também exigem o header `X-CSRF-Token` igual ao cookie assinado `twcin_csrf` (Double-Submit Cookie).
 
 ## Saúde e configurações da organização
 
@@ -10,6 +10,7 @@ Todas as rotas — exceto `/api/health`, `/api/settings/public`, `/api/auth/stat
 
 ## Autenticação
 
+- `GET /api/auth/csrf` — Garante e retorna `{ csrf_token }` no cookie `twcin_csrf` para envio em `X-CSRF-Token`.
 - `GET /api/auth/status` — Verifica se o setup inicial ainda é necessário (`{ needs_setup: boolean }`).
 - `POST /api/auth/setup` — Cria o primeiro usuário quando não há contas cadastradas (com rate limit).
 - `POST /api/auth/login` — Autentica o usuário e define o cookie de sessão `HttpOnly` (com rate limit rigoroso).

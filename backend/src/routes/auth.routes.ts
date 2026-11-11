@@ -11,6 +11,7 @@ import {
   signSessionToken,
   type AuthUser
 } from "../security/auth.js";
+import { clearCsrfCookie, ensureCsrfCookie, setCsrfCookie } from "../security/csrf.js";
 import { hashPassword, verifyPassword } from "../security/password.js";
 import { ConflictError } from "../services/errors.js";
 
@@ -38,7 +39,12 @@ function toPublicAuthUser(user: AuthUser) {
 export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): void {
   const { db, jwtSecret, cookieSecure, requireAuthPendingAllowed } = deps;
 
-  app.get("/api/auth/status", async () => {
+  app.get("/api/auth/csrf", async (request, reply) => {
+    return { csrf_token: ensureCsrfCookie(request, reply, jwtSecret, cookieSecure) };
+  });
+
+  app.get("/api/auth/status", async (request, reply) => {
+    ensureCsrfCookie(request, reply, jwtSecret, cookieSecure);
     const row = db.prepare("SELECT COUNT(*) AS count FROM users").get() as { count: number };
     return { needs_setup: row.count === 0 };
   });
@@ -105,6 +111,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): v
 
       const token = await signSessionToken(createdUser, jwtSecret);
       setSessionCookie(reply, token, cookieSecure);
+      setCsrfCookie(reply, jwtSecret, cookieSecure);
 
       return reply.code(201).send({ user: toPublicAuthUser(createdUser) });
     }
@@ -186,6 +193,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): v
 
       const token = await signSessionToken(authUser, jwtSecret);
       setSessionCookie(reply, token, cookieSecure);
+      setCsrfCookie(reply, jwtSecret, cookieSecure);
 
       return { user: toPublicAuthUser(authUser) };
     }
@@ -256,6 +264,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): v
 
       const freshToken = await signSessionToken(updatedUser, jwtSecret);
       setSessionCookie(reply, freshToken, cookieSecure);
+      setCsrfCookie(reply, jwtSecret, cookieSecure);
 
       return { user: toPublicAuthUser(updatedUser) };
     }
@@ -268,6 +277,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): v
       revokeSession(db, request.currentSession.jti, request.currentSession.exp);
     }
     clearSessionCookie(reply, cookieSecure);
+    clearCsrfCookie(reply, cookieSecure);
     writeAuditLog(db, {
       userId: user.id,
       userName: user.full_name,
@@ -298,10 +308,12 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): v
       });
     });
     clearSessionCookie(reply, cookieSecure);
+    clearCsrfCookie(reply, cookieSecure);
     return { ok: true };
   });
 
-  app.get("/api/auth/me", { preHandler: [requireAuthPendingAllowed] }, async (request) => {
+  app.get("/api/auth/me", { preHandler: [requireAuthPendingAllowed] }, async (request, reply) => {
+    ensureCsrfCookie(request, reply, jwtSecret, cookieSecure);
     return { user: toPublicAuthUser(request.currentUser!) };
   });
 }
