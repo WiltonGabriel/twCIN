@@ -1,0 +1,4 @@
+{$TWCIN_DOMAIN} {
+  tls internal
+  reverse_proxy twcin:3333
+}

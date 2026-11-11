@@ -2,11 +2,15 @@
   "name": "twcin",
   "version": "1.0.0",
   "private": true,
-  "description": "Sistema interno de controle de bancada, movimentações e empréstimos de equipamentos de TI",
+  "description": "Sistema interno offline-first de controle de equipamentos, movimentações, empréstimos e auditoria de TI",
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "npm --prefix backend run build && npm --prefix frontend run build",
-    "test": "npm --prefix backend test",
-    "typecheck": "npm --prefix backend run typecheck && npm --prefix frontend run typecheck"
+    "test": "npm --prefix backend test && npm --prefix frontend test",
+    "test:e2e": "node scripts/e2e-smoke.mjs",
+    "typecheck": "npm --prefix backend run typecheck && npm --prefix frontend run typecheck",
+    "version:sync": "node scripts/set-version.mjs",
+    "package:win": "node scripts/package-release.mjs --target win-x64",
+    "package:linux": "node scripts/package-release.mjs --target linux-x64"
   }
 }

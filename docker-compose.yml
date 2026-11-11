@@ -1,0 +1,61 @@
+services:
+  twcin:
+    image: ghcr.io/wiltongabriel/twcin:${TWCIN_VERSION:-latest}
+    build:
+      context: .
+    container_name: twcin
+    restart: unless-stopped
+    ports:
+      - "${TWCIN_PORT:-3333}:3333"
+    environment:
+      NODE_ENV: production
+      PORT: 3333
+      HOST: 0.0.0.0
+      SERVE_FRONTEND: "true"
+      DATA_DIR: /data
+      AUTO_BACKUP_HOURS: ${AUTO_BACKUP_HOURS:-24}
+      AUTO_BACKUP_RETAIN: ${AUTO_BACKUP_RETAIN:-14}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3333}
+      JWT_SECRET: ${JWT_SECRET:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - twcin_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # Opcional para habilitar HTTPS na rede local / domínio e instalar o PWA no celular:
+  #   TWCIN_DOMAIN=ti.suaempresa.local COOKIE_SECURE=true TRUST_PROXY=caddy docker compose --profile https up -d
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    container_name: twcin-proxy
+    restart: unless-stopped
+    depends_on:
+      twcin:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      TWCIN_DOMAIN: ${TWCIN_DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile.docker:/etc/caddy/Caddyfile:ro
+      - twcin_caddy_data:/data
+      - twcin_caddy_config:/config
+
+volumes:
+  twcin_data:
+  twcin_caddy_data:
+  twcin_caddy_config:

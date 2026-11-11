@@ -1,0 +1,238 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag da versão para publicar (ex.: v1.0.0)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  testar:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Definir versão do Release
+        id: meta
+        run: |
+          RAW_TAG="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
+            RAW_TAG="${{ inputs.tag }}"
+          fi
+          case "$RAW_TAG" in
+            v*) TAG="$RAW_TAG" ;;
+            *) TAG="v$(node -p "require('./package.json').version")" ;;
+          esac
+          VER="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Instalar, testar e compilar
+        run: |
+          npm --prefix backend ci
+          npm --prefix frontend ci
+          node scripts/set-version.mjs "${{ steps.meta.outputs.version }}"
+          npm run typecheck
+          npm test
+          npm run build
+          npm run test:e2e
+
+  docker:
+    needs: testar
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ajustar versão nos manifestos
+        run: node scripts/set-version.mjs "${{ needs.testar.outputs.version }}"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadados Docker
+        id: docker_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.testar.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.testar.outputs.tag }}
+            type=raw,value=latest
+
+      - name: Compilar e publicar imagem multi-arch no GHCR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.docker_meta.outputs.tags }}
+          labels: ${{ steps.docker_meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ needs.testar.outputs.version }}
+
+  pacote-windows:
+    needs: testar
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Instalar dependências e sincronizar versão
+        run: |
+          npm --prefix backend ci
+          npm --prefix frontend ci
+          node scripts/set-version.mjs "${{ needs.testar.outputs.version }}"
+
+      - name: Preparar runtime portátil (Node.js oficial + WinSW verificado)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "_runtime" | Out-Null
+          Copy-Item -Force (Get-Command node).Source "_runtime/node.exe"
+
+          $winswUrl = "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW.NET4.exe"
+          $expectedSha = "923111c7142b3dc783a3c722b19b8a21bcb78222d7a136ac33f0ca8a29f4cb66"
+          Invoke-WebRequest -Uri $winswUrl -OutFile "_runtime/twcin-service.exe"
+          $actualSha = (Get-FileHash -Path "_runtime/twcin-service.exe" -Algorithm SHA256).Hash.ToLower()
+          if ($actualSha -ne $expectedSha) {
+            throw "Checksum inválido para WinSW.NET4.exe: $actualSha"
+          }
+
+      - name: Gerar ZIP para Windows Server
+        run: node scripts/package-release.mjs --target win-x64 --runtime-dir _runtime
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pacote-win-x64
+          path: release/twcin-v*-win-x64.zip
+
+  pacote-linux:
+    needs: testar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Preparar pacote Linux portátil
+        run: |
+          npm --prefix backend ci
+          npm --prefix frontend ci
+          node scripts/set-version.mjs "${{ needs.testar.outputs.version }}"
+          mkdir -p _runtime/bin
+          cp "$(command -v node)" _runtime/bin/node
+          node scripts/package-release.mjs --target linux-x64 --runtime-dir _runtime
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pacote-linux-x64
+          path: release/twcin-v*-linux-x64.tar.gz
+
+  publicar-release:
+    needs: [testar, docker, pacote-windows, pacote-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Gerar checksums e notas do Release
+        id: notes
+        run: |
+          cd release-assets
+          cp ../docker-compose.yml ./docker-compose.yml
+          sha256sum twcin-v* docker-compose.yml > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+          REPO_LOWER="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
+          VER="${{ needs.testar.outputs.version }}"
+          TAG="${{ needs.testar.outputs.tag }}"
+
+          {
+            echo "## twCIN ${TAG}"
+            echo ""
+            node -e '
+              const fs = require("fs");
+              const changelog = fs.existsSync("../CHANGELOG.md") ? fs.readFileSync("../CHANGELOG.md", "utf8") : "";
+              const ver = process.argv[1];
+              const esc = ver.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              const re = new RegExp(`## \\[${esc}\\][^\\n]*\\n([\\s\\S]*?)(?=\\n## \\[|$)`);
+              const m = changelog.match(re);
+              if (m && m[1].trim()) console.log(m[1].trim());
+            ' "$VER"
+            echo ""
+            echo "### Como executar esta versão"
+            echo ""
+            echo "**Docker (Linux):**"
+            echo '```bash'
+            echo "docker pull ghcr.io/${REPO_LOWER}:${VER}"
+            echo "TWCIN_VERSION=${VER} docker compose up -d"
+            echo '```'
+            echo ""
+            echo "**Windows Server (sem Docker):**"
+            echo "1. Baixe \`twcin-${TAG}-win-x64.zip\` abaixo e extraia a pasta."
+            echo "2. Para testar na hora, execute \`iniciar-twcin.bat\`."
+            echo "3. Para rodar sempre como **Serviço nativo do Windows**, execute \`instalar-servico.ps1\` como Administrador."
+            echo ""
+            echo "**Linux sem Docker:**"
+            echo "Extraia \`twcin-${TAG}-linux-x64.tar.gz\` e execute \`./iniciar-twcin.sh\` (ou \`sudo ./instalar-linux.sh\` para instalar em systemd)."
+          } > ../release-body.md
+
+      - name: Publicar Release no GitHub
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.testar.outputs.tag }}
+          name: "twCIN ${{ needs.testar.outputs.tag }}"
+          body_path: release-body.md
+          generate_release_notes: true
+          files: |
+            release-assets/twcin-v*
+            release-assets/docker-compose.yml
+            release-assets/SHA256SUMS.txt
