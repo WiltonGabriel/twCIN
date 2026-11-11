@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
 import type { EnvConfig } from "../src/config/env.js";
+import { listenWithPortPolicy } from "../src/config/listen.js";
 import { runScheduledBackup } from "../src/services/backup.service.js";
 
 function createTestEnv(overrides?: Partial<EnvConfig>): EnvConfig {
@@ -1260,6 +1262,120 @@ describe("twCIN API — correções da auditoria (fase 1)", () => {
       assert.equal(remaining.length, 2);
     } finally {
       fs.rmSync(tmpBackupDir, { recursive: true, force: true });
+    }
+  });
+
+  it("cadastra, edita e sincroniza categorias com vínculo automático e renomeação em equipamentos", async () => {
+    await setup();
+
+    const catRes = await call("POST", "/api/catalogs/categories", { name: "Notebook", is_default: true });
+    assert.equal(catRes.status, 201);
+    const catId = catRes.body.item.id as number;
+    assert.equal(catRes.body.item.is_default, 1);
+
+    const dupRes = await call("POST", "/api/catalogs/categories", { name: "notebook" });
+    assert.equal(dupRes.status, 409);
+
+    const eqById = await call("POST", "/api/catalogs/equipments", {
+      name: "Latitude 5430",
+      category_id: catId
+    });
+    assert.equal(eqById.status, 201);
+    assert.equal(eqById.body.item.category_id, catId);
+    assert.equal(eqById.body.item.category, "Notebook");
+
+    const eqByName = await call("POST", "/api/catalogs/equipments", {
+      name: "ThinkPad E14",
+      category: "  notebook  "
+    });
+    assert.equal(eqByName.status, 201);
+    assert.equal(eqByName.body.item.category_id, catId);
+    assert.equal(eqByName.body.item.category, "Notebook");
+
+    const renameRes = await call("PATCH", `/api/catalogs/categories/${catId}`, { name: "Notebooks" });
+    assert.equal(renameRes.status, 200);
+    assert.equal(renameRes.body.item.name, "Notebooks");
+
+    const eqsAfterRename = await call("GET", "/api/catalogs/equipments");
+    assert.equal(eqsAfterRename.status, 200);
+    for (const eq of eqsAfterRename.body.items as Array<{ category_id: number; category: string }>) {
+      assert.equal(eq.category_id, catId);
+      assert.equal(eq.category, "Notebooks");
+    }
+
+    const syncCatRes = await call("POST", "/api/sync", {
+      operations: [
+        { op_id: "op-cat-1", type: "category.create", payload: { name: "Projetor", is_default: false } },
+        { op_id: "op-cat-2", type: "category.create", payload: { name: "projetor", is_default: false } }
+      ]
+    });
+    assert.equal(syncCatRes.status, 200);
+    assert.equal(syncCatRes.body.results[0].status, "applied");
+    assert.equal(syncCatRes.body.results[1].status, "applied");
+    assert.equal(syncCatRes.body.results[0].record.id, syncCatRes.body.results[1].record.id);
+    assert.ok(
+      (syncCatRes.body.snapshot.catalog_categories as Array<{ name: string }>).some((c) => c.name === "Projetor")
+    );
+
+    const deactivate = await call("PATCH", `/api/catalogs/categories/${catId}`, { active: false });
+    assert.equal(deactivate.status, 200);
+    const activeOnly = await call("GET", "/api/catalogs/categories");
+    assert.equal(
+      (activeOnly.body.items as Array<{ id: number }>).some((c) => c.id === catId),
+      false
+    );
+    const withInactive = await call("GET", "/api/catalogs/categories?includeInactive=true");
+    assert.equal(
+      (withInactive.body.items as Array<{ id: number }>).some((c) => c.id === catId),
+      true
+    );
+  });
+
+  it("falha em porta ocupada no modo serviço e faz fallback automático no modo portátil", async () => {
+    const blocker = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      blocker.once("error", reject);
+      blocker.listen(0, "127.0.0.1", () => resolve());
+    });
+
+    const address = blocker.address();
+    assert.ok(address && typeof address === "object");
+    const busyPort = address.port;
+
+    const failFastApp = (await buildApp({ env: createTestEnv({ port: busyPort }) })).app;
+    try {
+      await assert.rejects(
+        () =>
+          listenWithPortPolicy(failFastApp, {
+            port: busyPort,
+            host: "127.0.0.1",
+            autoFallback: false,
+            envFilePath: "twcin.env"
+          }),
+        (err: unknown) => {
+          const e = err as Error & { code?: string };
+          assert.equal(e.code, "EADDRINUSE");
+          assert.match(e.message, /já está sendo usada/);
+          assert.match(e.message, /twcin\.env/);
+          return true;
+        }
+      );
+
+      const fallbackApp = (await buildApp({ env: createTestEnv({ port: busyPort }) })).app;
+      app = fallbackApp;
+
+      const bound = await listenWithPortPolicy(fallbackApp, {
+        port: busyPort,
+        host: "127.0.0.1",
+        autoFallback: true
+      });
+      assert.ok(bound.port > busyPort);
+      assert.equal(bound.fallbackFrom, busyPort);
+    } finally {
+      await failFastApp.close();
+      await new Promise<void>((resolve, reject) => {
+        blocker.close((err) => (err ? reject(err) : resolve()));
+      });
     }
   });
 });

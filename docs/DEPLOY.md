@@ -62,7 +62,8 @@ Baixe o arquivo **`twcin-vX.Y.Z-win-x64.zip`** da página de **Releases** no Git
 
 1. Abra a pasta extraída.
 2. Dê dois cliques em **`iniciar-twcin.bat`**.
-3. Abra **`http://localhost:3333`** no navegador.
+3. Acesse a URL exibida no console (por padrão `http://localhost:3333`). Se a porta estiver ocupada no computador, o modo portátil usa automaticamente a próxima porta livre (`PORT_AUTO_FALLBACK=true`) para você abrir sem erro.
+4. Para encerrar com segurança, pressione **`Ctrl + C`** na janela do terminal.
 
 Todos os dados ficam dentro da subpasta `.\data\` ao lado do script.
 
@@ -77,16 +78,19 @@ Para continuar rodando mesmo sem usuário logado, iniciar no boot e reiniciar au
 powershell -ExecutionPolicy Bypass -File .\instalar-servico.ps1
 ```
 
-> Se quiser que o script também crie a regra no Firewall do Windows para a rede Privada/Domínio na porta `3333`, adicione `-OpenFirewall`.
+> Se quiser liberar também o Firewall do Windows na rede Privada/Domínio, adicione `-OpenFirewall`. Se a porta `3333` já estiver ocupada no servidor, o instalador avisa antes de registrar e você pode definir outra com `-Port 3400` (a configuração é salva exclusivamente em `twcin.env`).
 
 **O que o instalador faz sem invadir o sistema:**
 - Copia os arquivos do programa para `C:\Program Files\twCIN` (imutável).
 - Mantém banco, `.jwt_secret`, `twcin.env`, backups automáticos e logs rotacionados em **`C:\ProgramData\twCIN`** com permissões NTFS restritas a `Administrators`, `SYSTEM` e `NT AUTHORITY\LOCAL SERVICE`.
 - Registra o serviço **`twCIN`** rodando sob a conta restrita **`NT AUTHORITY\LocalService`** (sem privilégio de Administrador).
 
-### Atualizando ou removendo no Windows Server
+### Como parar, reiniciar, atualizar ou remover no Windows Server
 
-- **Atualizar:** baixe e extraia o novo `.zip` e execute novamente `.\instalar-servico.ps1`. O script para o serviço, substitui apenas `C:\Program Files\twCIN`, preserva 100% dos dados em `C:\ProgramData\twCIN` e sobe o serviço já migrado.
+- **Forma rápida (1 clique):** execute **`gerenciar-servico.bat`** para ver o status atual e escolher **Parar**, **Iniciar**, **Reiniciar**, abrir logs ou abrir no navegador.
+- **Pelo Windows / PowerShell:** abra `services.msc` e gerencie **`twCIN — Gestão Interna de TI`**, ou execute `Stop-Service twCIN` / `Start-Service twCIN` / `Restart-Service twCIN`.
+- **Mudar a porta depois de instalado:** edite `PORT=...` em `C:\ProgramData\twCIN\twcin.env` e reinicie o serviço.
+- **Atualizar:** baixe e extraia o novo `.zip` e execute novamente `.\instalar-servico.ps1`. O script para o serviço, substitui apenas `C:\Program Files\twCIN`, preserva 100% dos dados e a porta configurada em `C:\ProgramData\twCIN` e sobe o serviço já migrado.
 - **Remover serviço:** execute `.\desinstalar-servico.ps1` (os dados em `C:\ProgramData\twCIN` continuam preservados, a menos que passe `-PurgeData`).
 
 ---
@@ -100,10 +104,11 @@ tar -xzf twcin-v1.0.0-linux-x64.tar.gz
 cd twcin-v1.0.0-linux-x64
 ```
 
-- **Teste rápido:** `./iniciar-twcin.sh`
-- **Serviço systemd dedicado:** `sudo ./instalar-linux.sh`
-  - Programa em `/opt/twcin`, dados em `/var/lib/twcin`, rodando sob o usuário de sistema `twcin` com `ProtectSystem=strict` e `NoNewPrivileges=true`.
-- **Atualizar:** repita `sudo ./instalar-linux.sh` com a nova versão extraída (os dados em `/var/lib/twcin` não são sobrescritos).
+- **Teste rápido:** `./iniciar-twcin.sh` (usa a próxima porta livre automaticamente se `3333` estiver em uso; encerre com `Ctrl + C`).
+- **Serviço systemd dedicado:** `sudo ./instalar-linux.sh` (ou `TWCIN_PORT=3400 sudo -E ./instalar-linux.sh` se `3333` estiver ocupada).
+  - Programa em `/opt/twcin`, dados e `twcin.env` em `/var/lib/twcin`, rodando sob o usuário de sistema `twcin` com `ProtectSystem=strict` e `NoNewPrivileges=true`.
+- **Parar / reiniciar / ver logs:** `sudo systemctl stop twcin`, `sudo systemctl restart twcin`, `sudo systemctl status twcin` e `sudo journalctl -u twcin -f`.
+- **Atualizar:** repita `sudo ./instalar-linux.sh` com a nova versão extraída (os dados e a porta em `/var/lib/twcin/twcin.env` são preservados).
 
 ---
 
@@ -114,6 +119,7 @@ Consulte [backend/.env.example](../backend/.env.example) (copiado como `data/twc
 | Variável | Padrão | Descrição |
 | :--- | :--- | :--- |
 | `PORT` | `3333` | Porta HTTP do servidor |
+| `PORT_AUTO_FALLBACK` | `false` (`true` nos scripts portáteis) | Quando `true`, busca a próxima porta livre se `PORT` estiver ocupada; em serviços, mantenha `false` |
 | `DATA_DIR` | `./data` | Pasta onde ficam `twcin.db`, `.jwt_secret` e `backups/` |
 | `SERVE_FRONTEND` | `false` (`true` nos pacotes) | Serve o frontend PWA junto à API |
 | `AUTO_BACKUP_HOURS` | `24` (em produção) | Intervalo do backup automático em disco (`0` desativa) |

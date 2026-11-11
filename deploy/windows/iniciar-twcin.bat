@@ -12,13 +12,14 @@ set "ENV_FILE=%~dp0data\twcin.env"
 set "DATA_DIR=%~dp0data"
 set "SERVE_FRONTEND=true"
 set "FRONTEND_DIST_DIR=%~dp0public"
+set "PORT_AUTO_FALLBACK=true"
 
 set "NODE_BIN=node"
 if exist "%~dp0runtime\node.exe" set "NODE_BIN=%~dp0runtime\node.exe"
 
 echo ==================================================
 echo  twCIN - Servidor local (modo portátil)
-echo  Acesse no navegador: http://localhost:3333
+echo  Se a porta configurada estiver ocupada, abre na próxima livre.
 echo  Pressione Ctrl+C para encerrar com segurança.
 echo ==================================================
 "%NODE_BIN%" "%~dp0backend\dist\server.js"

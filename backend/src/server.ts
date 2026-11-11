@@ -1,5 +1,6 @@
 import { buildApp } from "./app.js";
 import { loadEnv } from "./config/env.js";
+import { listenWithPortPolicy } from "./config/listen.js";
 import { startScheduledBackups } from "./services/backup.service.js";
 
 async function main() {
@@ -58,11 +59,28 @@ async function main() {
     void shutdown("uncaughtException");
   });
 
-  await app.listen({ port: env.port, host: env.host });
-  console.log(`twCIN v${env.appVersion || "1.0.0"} rodando em http://${env.host === "0.0.0.0" ? "localhost" : env.host}:${env.port}`);
+  try {
+    const bound = await listenWithPortPolicy(app, {
+      port: env.port,
+      host: env.host,
+      autoFallback: env.portAutoFallback,
+      envFilePath: env.envFilePath
+    });
+    if (bound.fallbackFrom !== null) {
+      console.warn(
+        `[twCIN] AVISO: Porta ${bound.fallbackFrom} já estava em uso; usando temporariamente a porta ${bound.port}.`
+      );
+    }
+    const displayHost = env.host === "0.0.0.0" ? "localhost" : env.host;
+    console.log(`twCIN v${env.appVersion || "1.0.0"} rodando em http://${displayHost}:${bound.port}`);
+  } catch (err) {
+    stopBackups?.();
+    await app.close().catch(() => {});
+    throw err;
+  }
 }
 
 main().catch((err) => {
-  console.error("Falha ao iniciar servidor:", err);
+  console.error("Falha ao iniciar servidor:", err instanceof Error ? err.message : err);
   process.exit(1);
 });

@@ -24,6 +24,8 @@ export interface EnvConfig {
   seedAdminPassword?: string;
   serveFrontend?: boolean;
   frontendDistDir?: string;
+  envFilePath?: string;
+  portAutoFallback?: boolean;
 }
 
 const backendRoot = path.resolve(import.meta.dirname, "../..");
@@ -140,7 +142,7 @@ export function loadEnv(): EnvConfig {
   }
 
   return {
-    port: Number.isFinite(port) ? port : 3333,
+    port: Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 3333,
     host,
     corsOrigin,
     cookieSecure,
@@ -158,6 +160,8 @@ export function loadEnv(): EnvConfig {
     serveFrontend: process.env.SERVE_FRONTEND === "true",
     frontendDistDir: process.env.FRONTEND_DIST_DIR?.trim()
       ? resolvePathAgainstRoot(process.env.FRONTEND_DIST_DIR.trim(), backendRoot)
-      : undefined
+      : undefined,
+    envFilePath: envFile,
+    portAutoFallback: process.env.PORT_AUTO_FALLBACK === "true"
   };
 }

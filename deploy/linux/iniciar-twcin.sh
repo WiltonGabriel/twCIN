@@ -14,11 +14,12 @@ export ENV_FILE="$BASE_DIR/data/twcin.env"
 export DATA_DIR="$BASE_DIR/data"
 export SERVE_FRONTEND=true
 export FRONTEND_DIST_DIR="$BASE_DIR/public"
+export PORT_AUTO_FALLBACK=true
 
 NODE_BIN="node"
 if [ -x "$BASE_DIR/runtime/bin/node" ]; then
   NODE_BIN="$BASE_DIR/runtime/bin/node"
 fi
 
-echo "Iniciando twCIN em http://localhost:3333 (Ctrl+C para encerrar)..."
+echo "Iniciando twCIN em modo portátil (Ctrl+C para encerrar com segurança)..."
 exec "$NODE_BIN" "$BASE_DIR/backend/dist/server.js"
