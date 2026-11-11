@@ -77,11 +77,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Normalizar nome do repositório para o GHCR
+        run: echo "REPO_LC=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
       - name: Metadados Docker
         id: docker_meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/${{ env.REPO_LC }}
           tags: |
             type=semver,pattern={{version}},value=${{ needs.testar.outputs.tag }}
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.testar.outputs.tag }}

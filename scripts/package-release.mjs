@@ -22,9 +22,10 @@ const skipBuild = args.includes("--skip-build");
 const rootPkg = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf8"));
 const version = String(rootPkg.version || "1.0.0").replace(/^v/, "");
 const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+const winShell = process.platform === "win32";
 
 if (!skipBuild) {
-  execFileSync(npmCmd, ["run", "build"], { cwd: rootDir, stdio: "inherit" });
+  execFileSync(npmCmd, ["run", "build"], { cwd: rootDir, stdio: "inherit", shell: winShell });
 }
 
 const releaseRoot = path.join(rootDir, "release");
@@ -39,7 +40,7 @@ fs.mkdirSync(stageBackend, { recursive: true });
 fs.cpSync(path.join(rootDir, "backend", "dist"), path.join(stageBackend, "dist"), { recursive: true });
 fs.copyFileSync(path.join(rootDir, "backend", "package.json"), path.join(stageBackend, "package.json"));
 fs.copyFileSync(path.join(rootDir, "backend", "package-lock.json"), path.join(stageBackend, "package-lock.json"));
-execFileSync(npmCmd, ["ci", "--omit=dev", "--ignore-scripts"], { cwd: stageBackend, stdio: "inherit" });
+execFileSync(npmCmd, ["ci", "--omit=dev", "--ignore-scripts"], { cwd: stageBackend, stdio: "inherit", shell: winShell });
 fs.rmSync(path.join(stageBackend, "package-lock.json"), { force: true });
 
 // 2. Copia frontend compilado e metadados.
