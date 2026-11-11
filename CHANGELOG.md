@@ -19,6 +19,12 @@ Todas as mudanças notáveis do **twCIN** são documentadas neste arquivo, segui
   - Serviços (`WinSW`, `systemd` e Docker) usam `twcin.env` como fonte única de porta (preservada em atualizações), falham rápido com diagnóstico claro em `EADDRINUSE` e validam portas ocupadas antes da instalação (`-Port` no Windows, `TWCIN_PORT` no Linux).
   - Inicializações portáteis (`iniciar-twcin.bat` e `iniciar-twcin.sh`) habilitam `PORT_AUTO_FALLBACK=true` para subir automaticamente na próxima porta livre caso a padrão esteja em uso.
 
+- **Segurança, qualidade e acessibilidade (`CSRF`, `CodeQL`, `axe-core` e testes de UI):**
+  - Camada explícita anti-CSRF via Double-Submit Cookie assinado (`twcin_csrf` + header `X-CSRF-Token`) nas requisições mutáveis autenticadas e endpoint `GET /api/auth/csrf`.
+  - Suíte de testes de componentes React (`@testing-library/react` + `jsdom`) em `frontend/tests/components.test.tsx`.
+  - Auditoria automatizada de acessibilidade WCAG 2.1 AA com `axe-core` integrada ao `npm run test:e2e` (Chrome real), com ajustes de contraste nos tokens CSS e semântica ARIA (`combobox`/`listbox`).
+  - Workflow `.github/workflows/codeql.yml` (análise estática JS/TS), verificação `npm audit --omit=dev --audit-level=high` no CI e documentação de limites, concorrência e dimensionamento em `docs/DEPLOY.md`.
+
 ## [1.0.0] - 2026-11-10
 
 ### Principais recursos

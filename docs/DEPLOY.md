@@ -127,3 +127,23 @@ Consulte [backend/.env.example](../backend/.env.example) (copiado como `data/twc
 | `COOKIE_SECURE` | `false` | Defina `true` apenas quando publicar atrás de HTTPS |
 | `TRUST_PROXY` | `false` | Defina `true` ou IP do proxy reverso (Caddy/Nginx/IIS) |
 | `CORS_ORIGIN` | `http://localhost:5173` | Origens extras permitidas (com `SERVE_FRONTEND=true`, acessos pelo mesmo IP/host já são aceitos) |
+
+---
+
+## 5. Limites, Concorrência e Dimensionamento
+
+O **twCIN** usa **Node.js 24+**, **Fastify** e **SQLite em processo único (`node:sqlite`)** — excelente para uso interno de setores de TI sem sobrecarga de infraestrutura externa, dentro dos seguintes limites configurados:
+
+| Recurso | Limite atual | Observação prática |
+| :--- | :--- | :--- |
+| **Tamanho de payload JSON padrão (`bodyLimit`)** | `3 MB` | Cobre cadastros, sincronização offline em lote e logotipos/fundos convertidos para WebP. |
+| **Restauração de backup (`/api/backup/restore*`)** | `50 MB` HTTP / `48 MB` base64 (`~35 MB` arquivo `.db`) | Acima de `~35 MB` em disco, prefira copiar o `.db` parado diretamente no volume/pasta `data/`. |
+| **Rate limit global** | `180 req/min` por IP | Atrás de proxy reverso, configure `TRUST_PROXY` para não agrupar todos os clientes no IP do proxy. |
+| **Rate limit em rotas sensíveis** | Login: `8/min` · Setup/Backup/Restore inicial: `5/min` · Troca de senha: `10/min` · Restore: `3/min` | Proteção contra força bruta e uso abusivo de CPU/disco (`scrypt` + `VACUUM INTO`). |
+| **Paginação da auditoria (`GET /api/audit`)** | Padrão `100` (máx. `500` itens/página) | Navegação por cursor (`before_id`). |
+| **Concorrência no SQLite (`WAL`)** | `PRAGMA journal_mode = WAL`, `synchronous = FULL`, `busy_timeout = 5000` (`5 s`) | Leituras ocorrem em paralelo; transações de escrita usam `BEGIN IMMEDIATE`. |
+
+### Dimensionamento recomendado
+
+- **Público ideal:** equipes internas de TI (~5 a 50 técnicos ativos, dezenas de milhares de registros de equipamentos/movimentações) e uso offline eventual com sincronização em lotes.
+- **Gargalo esperado sob alta carga:** operações simultâneas de escrita intensiva (centenas de requisições `POST`/`PATCH` concorrentes por segundo) disputarão a fila de escrita única do SQLite (limitada a `5 s` de espera por `busy_timeout`) e não suportam múltiplas réplicas/containers apontando para o mesmo arquivo `.db` (mantenha sempre **1 instância ativa por banco**).

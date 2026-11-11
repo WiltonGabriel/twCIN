@@ -21,8 +21,8 @@ O **twCIN** oferece à equipe de TI um ambiente único para controlar equipament
 - **Dossiê unificado por setor (`Por Setor`):** selecione um setor (ex.: *Recursos Didáticos*) e veja em uma tela o que está com ele agora, o que ele trouxe para conserto, o que já devolvemos ao setor e o histórico/doações, com filtro de período e **Imprimir dossiê PDF**.
 - **Movimentações com regras (`Movimentações`):** código sequencial `MOV-XXXX`, prazo configurável, filtro por setor também na aba **Em aberto**, histórico completo, devoluções e termo PDF com assinatura.
 - **Auditoria e backups:** trilha imutável em `audit_logs`, exportação de planilhas CSV, backup/restauração atômica `.db` pela interface (inclusive no setup inicial de novos servidores) e **backup automático em disco** com retenção configurável.
-- **PWA offline-first e identidade visual:** cache `IndexedDB` (Dexie), fila offline por usuário com resolução de conflitos, personalização de paletas, imagem de fundo, logo sincronizada com o favicon da aba e editor/recortador de imagens com conversão para WebP e download.
-- **Pronto para servidor:** encerramento gracioso (`SIGTERM`/`SIGINT`), healthcheck SQLite em `/api/health`, suporte a Docker não-privilegiado, pacote portátil com fallback automático de porta, Serviço nativo para Windows Server (com painel de gerenciamento rápido `gerenciar-servico.bat`) e serviço `systemd` para Linux.
+- **PWA offline-first e acessibilidade:** cache `IndexedDB` (Dexie), fila offline por usuário com resolução de conflitos, personalização de paletas com contraste WCAG AA, logo sincronizada com o favicon da aba, editor/recortador WebP e auditoria automatizada com `axe-core` no fluxo E2E.
+- **Segurança e operação em servidor:** cookie de sessão `HttpOnly`/`SameSite=Lax`, proteção CSRF (`twcin_csrf` + `X-CSRF-Token`), encerramento gracioso (`SIGTERM`/`SIGINT`), healthcheck SQLite em `/api/health`, suporte a Docker não-privilegiado, pacote portátil com fallback automático de porta, Serviço nativo para Windows Server (`gerenciar-servico.bat`) e serviço `systemd` para Linux. Veja limites e dimensionamento recomendados em [docs/DEPLOY.md](docs/DEPLOY.md#5-limites-concorrência-e-dimensionamento).
 
 ---
 
@@ -100,13 +100,13 @@ No Windows PowerShell com bloqueio de scripts `.ps1`, execute `npm.cmd run dev` 
 # Verificação de tipos (backend e frontend)
 npm run typecheck
 
-# Testes unitários e de integração (API SQLite + motor offline Dexie)
+# Testes unitários e de integração (API SQLite, CSRF + componentes React e motor offline)
 npm test
 
 # Build de produção (backend + frontend PWA)
 npm run build
 
-# Teste E2E no navegador Chrome real contra o servidor de produção
+# Teste E2E no navegador Chrome real + auditoria de acessibilidade (axe-core WCAG 2.1 AA)
 npm run test:e2e
 
 # Empacotamento local (gera em release/)
