@@ -16,6 +16,7 @@ const RESTORE_DELETE_ORDER = [
   "movements",
   "catalog_locations",
   "catalog_equipments",
+  "catalog_categories",
   "catalog_sectors",
   "revoked_sessions",
   "app_settings",
@@ -28,6 +29,7 @@ const RESTORE_INSERT_ORDER = [
   "users",
   "app_settings",
   "catalog_sectors",
+  "catalog_categories",
   "catalog_locations",
   "catalog_equipments",
   "movements",
@@ -198,7 +200,7 @@ export function restoreBackupFromBase64(
         db.exec(`DELETE FROM ${table};`);
       }
       for (const table of RESTORE_INSERT_ORDER) {
-        if (existingTables.has(table) || table === "schema_migrations") {
+        if (existingTables.has(table) || table === "schema_migrations" || table === "catalog_categories") {
           copyTableRows(sourceDb, db, table);
         }
       }

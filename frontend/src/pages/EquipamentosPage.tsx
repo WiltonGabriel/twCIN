@@ -1,9 +1,15 @@
 import { Eye, FileText, History, Pencil, Plus, Printer, Undo2, X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { PageIntro } from "../components/PageIntro";
-import { findCatalogSector, SectorSelector } from "../components/SectorSelector";
+import {
+  CategorySelector,
+  findCatalogCategory,
+  findCatalogSector,
+  SectorSelector
+} from "../components/SectorSelector";
 import { apiRequest } from "../services/api";
 import type {
+  CatalogCategory,
   CatalogEquipment,
   CatalogSector,
   EquipmentCondition,
@@ -28,6 +34,7 @@ import { collectSectorFilterOptions, matchEquipmentSector } from "../utils/secto
 type EquipmentPayload = {
   name: string;
   patrimony: string;
+  category_id: number | null;
   category: string;
   ownership_type: EquipmentOwnership;
   condition_status: EquipmentCondition;
@@ -49,6 +56,7 @@ interface EquipamentosPageProps {
   equipments: CatalogEquipment[];
   movements: MovementItem[];
   sectors: CatalogSector[];
+  categories: CatalogCategory[];
   suggestions: SuggestionsPayload;
   onCreate: (payload: EquipmentPayload) => Promise<void>;
   onUpdate: (item: CatalogEquipment, patch: Partial<EquipmentPayload & { active: boolean }>) => Promise<void>;
@@ -57,6 +65,7 @@ interface EquipamentosPageProps {
     input: { received_by: string; returned_at?: string; notes?: string }
   ) => Promise<void>;
   onCreateSector: (payload: { name: string; is_default?: boolean }) => Promise<CatalogSector>;
+  onCreateCategory: (payload: { name: string; is_default?: boolean }) => Promise<CatalogCategory>;
   onOpenAudit: (item: CatalogEquipment) => void;
   onPrintReport: (items: CatalogEquipment[], title?: string) => void;
   onPrintReceipt: (item: CatalogEquipment) => void;
@@ -71,12 +80,13 @@ type Filter =
   | "devolvidos_dono"
   | "inactive";
 
-function emptyEquipmentForm(): EquipmentFormState {
+function emptyEquipmentForm(defaultCategory?: CatalogCategory): EquipmentFormState {
   const now = new Date();
   return {
     name: "",
     patrimony: "",
-    category: "",
+    category_id: defaultCategory && defaultCategory.id > 0 ? defaultCategory.id : null,
+    category: defaultCategory?.name || "",
     ownership_type: "proprio_ti",
     condition_status: "disponivel",
     origin_sector_id: null,
@@ -95,6 +105,7 @@ function formFromEquipment(eq: CatalogEquipment): EquipmentFormState {
   return {
     name: eq.name,
     patrimony: eq.patrimony || "",
+    category_id: eq.category_id ?? null,
     category: eq.category,
     ownership_type: eq.ownership_type,
     condition_status: eq.condition_status,
@@ -133,8 +144,10 @@ function EquipmentFormFields({
   value,
   onChange,
   sectors,
+  categories,
   suggestions,
   onCreateSector,
+  onCreateCategory,
   allowAutoNow,
   lockedCondition
 }: {
@@ -142,8 +155,10 @@ function EquipmentFormFields({
   value: EquipmentFormState;
   onChange: (v: EquipmentFormState) => void;
   sectors: CatalogSector[];
+  categories: CatalogCategory[];
   suggestions: SuggestionsPayload;
   onCreateSector: (payload: { name: string; is_default?: boolean }) => Promise<CatalogSector>;
+  onCreateCategory: (payload: { name: string; is_default?: boolean }) => Promise<CatalogCategory>;
   allowAutoNow: boolean;
   /** Motivo pelo qual a situação não pode ser alterada agora (ex.: está emprestado). */
   lockedCondition?: string;
@@ -161,6 +176,15 @@ function EquipmentFormFields({
       ...value,
       origin: name,
       origin_sector_id: matched && matched.id > 0 ? matched.id : null
+    });
+  };
+
+  const handleCategoryChange = (name: string) => {
+    const matched = findCatalogCategory(categories, name);
+    onChange({
+      ...value,
+      category: name,
+      category_id: matched && matched.id > 0 ? matched.id : null
     });
   };
 
@@ -253,7 +277,22 @@ function EquipmentFormFields({
       </div>
       <div>
         <label htmlFor={`${idPrefix}-cat`} className="tw-label">Categoria</label>
-        <input id={`${idPrefix}-cat`} value={value.category} onChange={(e) => set("category", e.target.value)} placeholder="Notebook, monitor, projetor..." className="tw-input" />
+        <CategorySelector
+          id={`${idPrefix}-cat`}
+          value={value.category}
+          onChange={handleCategoryChange}
+          categories={categories}
+          suggestedNames={suggestions.categories.map((c) => c.name)}
+          onCreateCategory={async (catPayload) => {
+            const created = await onCreateCategory(catPayload);
+            onChange({
+              ...value,
+              category: created.name,
+              category_id: created.id > 0 ? created.id : null
+            });
+            return created;
+          }}
+        />
       </div>
       <div>
         <label htmlFor={`${idPrefix}-own`} className="tw-label">Posse</label>
@@ -313,17 +352,20 @@ export function EquipamentosPage({
   equipments,
   movements,
   sectors,
+  categories,
   suggestions,
   onCreate,
   onUpdate,
   onReturnToOwner,
   onCreateSector,
+  onCreateCategory,
   onOpenAudit,
   onPrintReport,
   onPrintReceipt
 }: EquipamentosPageProps) {
   const [filter, setFilter] = useState<Filter>("all");
   const [sectorFilter, setSectorFilter] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [creating, setCreating] = useState<EquipmentFormState | null>(null);
   const [editing, setEditing] = useState<{ item: CatalogEquipment; fields: EquipmentFormState; active: boolean } | null>(null);
@@ -337,6 +379,7 @@ export function EquipamentosPage({
     returnedTime: string;
     notes: string;
   } | null>(null);
+  const [pendingCategory, setPendingCategory] = useState<{ mode: "create" | "edit"; name: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -344,6 +387,12 @@ export function EquipamentosPage({
   const editRef = useDialog(Boolean(editing), () => setEditing(null));
   const detailsRef = useDialog(Boolean(details), () => setDetails(null));
   const returnRef = useDialog(Boolean(returning), () => setReturning(null));
+  const catConfirmRef = useDialog(Boolean(pendingCategory), () => setPendingCategory(null));
+
+  const defaultCategory = useMemo(
+    () => categories.find((c) => c.active === 1 && c.is_default === 1),
+    [categories]
+  );
 
   /** Movimentação em aberto de cada equipamento ("onde está agora"). */
   const openByEquipment = useMemo(() => {
@@ -362,6 +411,22 @@ export function EquipamentosPage({
     () => sectorOptions.find((s) => s.name === sectorFilter) ?? null,
     [sectorOptions, sectorFilter]
   );
+
+  const categoryOptions = useMemo(() => {
+    const byLower = new Map<string, string>();
+    for (const c of categories) {
+      if (c.active === 1 && !byLower.has(c.name.toLowerCase())) {
+        byLower.set(c.name.toLowerCase(), c.name);
+      }
+    }
+    for (const eq of equipments) {
+      const cat = eq.category.trim();
+      if (cat && !byLower.has(cat.toLowerCase())) {
+        byLower.set(cat.toLowerCase(), cat);
+      }
+    }
+    return Array.from(byLower.values()).sort((a, b) => a.localeCompare(b, "pt-BR"));
+  }, [categories, equipments]);
 
   const active = equipments.filter((e) => e.active === 1);
   const counts = {
@@ -387,6 +452,7 @@ export function EquipamentosPage({
       return true;
     })
     .filter((eq) => (!selectedSectorOption ? true : matchEquipmentSector(eq, selectedSectorOption)))
+    .filter((eq) => (categoryFilter === "all" ? true : eq.category.trim().toLowerCase() === categoryFilter.toLowerCase()))
     .filter(
       (eq) =>
         !q ||
@@ -441,43 +507,47 @@ export function EquipamentosPage({
     });
   };
 
-  const submitCreate = (e: FormEvent) => {
-    e.preventDefault();
-    if (!creating) return;
+  const executeCreate = async (
+    target: EquipmentFormState,
+    resolvedCategory: { id: number | null; name: string }
+  ) => {
     const payload: EquipmentPayload = {
-      name: creating.name,
-      patrimony: creating.patrimony,
-      category: creating.category,
-      ownership_type: creating.ownership_type,
-      condition_status: creating.condition_status,
-      origin_sector_id: creating.origin_sector_id,
-      origin: creating.origin,
-      received_from: creating.received_from,
-      reason: creating.reason,
-      notes: creating.notes
+      name: target.name,
+      patrimony: target.patrimony,
+      category_id: resolvedCategory.id,
+      category: resolvedCategory.name,
+      ownership_type: target.ownership_type,
+      condition_status: target.condition_status,
+      origin_sector_id: target.origin_sector_id,
+      origin: target.origin,
+      received_from: target.received_from,
+      reason: target.reason,
+      notes: target.notes
     };
-    if (!creating.autoNow) {
-      const iso = toIso(creating.receivedDate, creating.receivedTime);
+    if (!target.autoNow) {
+      const iso = toIso(target.receivedDate, target.receivedTime);
       if (!iso) {
         setError("Data ou hora de recebimento inválida.");
         return;
       }
       payload.received_at = iso;
     }
-    void run(async () => {
+    await run(async () => {
       await onCreate(payload);
       setCreating(null);
     }, "Erro ao cadastrar equipamento.");
   };
 
-  const submitEdit = (e: FormEvent) => {
-    e.preventDefault();
-    if (!editing) return;
-    const { item, fields } = editing;
+  const executeEdit = async (
+    target: { item: CatalogEquipment; fields: EquipmentFormState; active: boolean },
+    resolvedCategory: { id: number | null; name: string }
+  ) => {
+    const { item, fields } = target;
     const patch: Partial<EquipmentPayload & { active: boolean }> = {};
     if (fields.name !== item.name) patch.name = fields.name;
     if (fields.patrimony !== (item.patrimony || "")) patch.patrimony = fields.patrimony;
-    if (fields.category !== item.category) patch.category = fields.category;
+    if (resolvedCategory.name !== item.category) patch.category = resolvedCategory.name;
+    if (resolvedCategory.id !== (item.category_id ?? null)) patch.category_id = resolvedCategory.id;
     if (fields.ownership_type !== item.ownership_type) patch.ownership_type = fields.ownership_type;
     if (fields.condition_status !== item.condition_status) patch.condition_status = fields.condition_status;
     if (fields.origin_sector_id !== (item.origin_sector_id ?? null)) patch.origin_sector_id = fields.origin_sector_id;
@@ -494,12 +564,58 @@ export function EquipamentosPage({
     if (nextReceivedAt !== (item.received_at || item.created_at)) {
       patch.received_at = nextReceivedAt;
     }
-    if (editing.active !== (item.active === 1)) patch.active = editing.active;
+    if (target.active !== (item.active === 1)) patch.active = target.active;
 
-    void run(async () => {
+    await run(async () => {
       if (Object.keys(patch).length > 0) await onUpdate(item, patch);
       setEditing(null);
     }, "Erro ao salvar equipamento.");
+  };
+
+  const resolveCategoryChoice = (rawName: string) => {
+    const trimmed = rawName.trim();
+    if (!trimmed) return { id: null, name: "" };
+    const matched = findCatalogCategory(categories, trimmed);
+    return matched ? { id: matched.id > 0 ? matched.id : null, name: matched.name } : null;
+  };
+
+  const submitCreate = (e: FormEvent) => {
+    e.preventDefault();
+    if (!creating) return;
+    const trimmedCat = creating.category.trim();
+    const resolved = resolveCategoryChoice(trimmedCat);
+    if (trimmedCat && !resolved) {
+      setPendingCategory({ mode: "create", name: trimmedCat });
+      return;
+    }
+    void executeCreate(creating, resolved ?? { id: null, name: "" });
+  };
+
+  const submitEdit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!editing) return;
+    const trimmedCat = editing.fields.category.trim();
+    const resolved = resolveCategoryChoice(trimmedCat);
+    if (trimmedCat && !resolved) {
+      setPendingCategory({ mode: "edit", name: trimmedCat });
+      return;
+    }
+    void executeEdit(editing, resolved ?? { id: null, name: "" });
+  };
+
+  const confirmCreatePendingCategory = () => {
+    if (!pendingCategory) return;
+    const { mode, name } = pendingCategory;
+    void run(async () => {
+      const created = await onCreateCategory({ name });
+      setPendingCategory(null);
+      const resolved = { id: created.id > 0 ? created.id : null, name: created.name };
+      if (mode === "create" && creating) {
+        await executeCreate(creating, resolved);
+      } else if (mode === "edit" && editing) {
+        await executeEdit(editing, resolved);
+      }
+    }, "Erro ao criar categoria.");
   };
 
   const submitReturnToOwner = (e: FormEvent) => {
@@ -597,7 +713,7 @@ export function EquipamentosPage({
             >
               <Printer className="w-4 h-4" aria-hidden="true" /> PDF
             </button>
-            <button type="button" className="tw-btn tw-btn-primary" onClick={() => { setError(null); setCreating(emptyEquipmentForm()); }}>
+            <button type="button" className="tw-btn tw-btn-primary" onClick={() => { setError(null); setCreating(emptyEquipmentForm(defaultCategory)); }}>
               <Plus className="w-4 h-4" aria-hidden="true" /> Novo equipamento
             </button>
           </>
@@ -617,17 +733,30 @@ export function EquipamentosPage({
           </div>
 
           <div className="flex flex-col sm:flex-row gap-2 sm:items-center justify-between">
-            <select
-              aria-label="Filtrar por setor de origem"
-              value={sectorFilter}
-              onChange={(e) => setSectorFilter(e.target.value)}
-              className="tw-input sm:w-64"
-            >
-              <option value="all">Todos os setores de origem</option>
-              {sectorOptions.map((s) => (
-                <option key={s.name} value={s.name}>{s.name}</option>
-              ))}
-            </select>
+            <div className="flex flex-col sm:flex-row gap-2 flex-1">
+              <select
+                aria-label="Filtrar por setor de origem"
+                value={sectorFilter}
+                onChange={(e) => setSectorFilter(e.target.value)}
+                className="tw-input sm:w-56"
+              >
+                <option value="all">Todos os setores de origem</option>
+                {sectorOptions.map((s) => (
+                  <option key={s.name} value={s.name}>{s.name}</option>
+                ))}
+              </select>
+              <select
+                aria-label="Filtrar por categoria"
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value)}
+                className="tw-input sm:w-52"
+              >
+                <option value="all">Todas as categorias</option>
+                {categoryOptions.map((cat) => (
+                  <option key={cat} value={cat}>{cat}</option>
+                ))}
+              </select>
+            </div>
             <input
               type="search"
               aria-label="Buscar equipamentos"
@@ -750,8 +879,10 @@ export function EquipamentosPage({
               value={creating}
               onChange={setCreating}
               sectors={sectors}
+              categories={categories}
               suggestions={suggestions}
               onCreateSector={onCreateSector}
+              onCreateCategory={onCreateCategory}
               allowAutoNow
             />
             {errorBox}
@@ -776,8 +907,10 @@ export function EquipamentosPage({
               value={editing.fields}
               onChange={(fields) => setEditing({ ...editing, fields })}
               sectors={sectors}
+              categories={categories}
               suggestions={suggestions}
               onCreateSector={onCreateSector}
+              onCreateCategory={onCreateCategory}
               allowAutoNow={false}
               lockedCondition={
                 openByEquipment.has(editing.item.id)
@@ -920,6 +1053,31 @@ export function EquipamentosPage({
               <button type="submit" className="tw-btn tw-btn-primary" disabled={saving}>{saving ? "Salvando..." : "Confirmar devolução"}</button>
             </div>
           </form>
+        )}
+      </dialog>
+
+      {/* Confirmar criação de categoria digitada manualmente */}
+      <dialog ref={catConfirmRef} aria-labelledby="cat-confirm-title" className="m-auto w-[min(94vw,430px)] rounded-xl p-5 shadow-xl">
+        {pendingCategory && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between border-b pb-2" style={{ borderColor: "var(--border)" }}>
+              <h3 id="cat-confirm-title" className="text-sm font-semibold">Confirmar criação de categoria</h3>
+              <button type="button" aria-label="Fechar" onClick={() => setPendingCategory(null)} className="tw-btn tw-btn-sm">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-sm">
+              A categoria <strong>{pendingCategory.name}</strong> ainda não existe no catálogo. Deseja criá-la agora e salvar o equipamento?
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <button type="button" autoFocus className="tw-btn" onClick={() => setPendingCategory(null)}>
+                Cancelar
+              </button>
+              <button type="button" className="tw-btn tw-btn-primary" disabled={saving} onClick={confirmCreatePendingCategory}>
+                {saving ? "Salvando..." : "Sim, criar categoria e salvar"}
+              </button>
+            </div>
+          </div>
         )}
       </dialog>
     </div>

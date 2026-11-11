@@ -34,10 +34,11 @@ Todas as rotas — exceto `/api/health`, `/api/settings/public`, `/api/auth/stat
 - `PATCH /api/movements/:id` — Edita um registro de movimentação com controle otimista de versão. Tipo e status precisam ser compatíveis (empréstimo: `ativo`/`devolvido`; instalação: `fixo`/`devolvido`).
 - `POST /api/movements/:id/return` — Registra a devolução (ou desfaz a instalação fixa) com carimbo de data/hora e técnico recebedor; o equipamento volta a `disponivel`.
 
-## Setores, locais e autocomplete
+## Setores, categorias, locais e autocomplete
 
-- `GET /api/catalogs/suggestions` — Sugestões combinadas de equipamentos, setores, locais e pessoas para autocomplete.
+- `GET /api/catalogs/suggestions` — Sugestões combinadas de equipamentos, setores, categorias, locais e pessoas para autocomplete.
 - `GET /api/catalogs/sectors`, `POST /api/catalogs/sectors`, `PATCH /api/catalogs/sectors/:id`
+- `GET /api/catalogs/categories`, `POST /api/catalogs/categories`, `PATCH /api/catalogs/categories/:id`
 - `GET /api/catalogs/locations`, `POST /api/catalogs/locations`, `PATCH /api/catalogs/locations/:id`
 
 ## Usuários e logs de auditoria
@@ -56,4 +57,4 @@ Todas as rotas — exceto `/api/health`, `/api/settings/public`, `/api/auth/stat
 ## Sincronização offline
 
 - `GET /api/sync/snapshot` — Snapshot completo para hidratação do cache local em `IndexedDB`.
-- `POST /api/sync` — Processa operações enfileiradas em ordem cronológica (`equipment.*`, `movement.*`, `sector.create`) com idempotência por `client_uuid` e detecção de conflitos via `version`.
+- `POST /api/sync` — Processa operações enfileiradas em ordem cronológica (`equipment.*`, `movement.*`, `sector.create`, `category.create`) com idempotência por `client_uuid` e detecção de conflitos via `version`.

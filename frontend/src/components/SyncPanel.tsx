@@ -9,7 +9,8 @@ const OPERATION_LABELS: Record<FailedOpEntry["type"], string> = {
   "movement.create": "Registro de movimentação",
   "movement.update": "Edição de movimentação",
   "movement.return": "Devolução",
-  "sector.create": "Cadastro de setor"
+  "sector.create": "Cadastro de setor",
+  "category.create": "Cadastro de categoria"
 };
 
 function describe(op: FailedOpEntry): string {

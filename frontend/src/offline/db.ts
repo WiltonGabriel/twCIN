@@ -1,6 +1,7 @@
 import Dexie, { type Table } from "dexie";
 import type {
   AuthUser,
+  CatalogCategory,
   CatalogEquipment,
   CatalogLocation,
   CatalogSector,
@@ -18,13 +19,15 @@ export type SyncOperationType =
   | "movement.create"
   | "movement.update"
   | "movement.return"
-  | "sector.create";
+  | "sector.create"
+  | "category.create";
 
 /** Registro otimista exibido enquanto a operação não chega ao servidor. */
 export type OptimisticRecord =
   | { table: "movements"; record: MovementItem }
   | { table: "equipments"; record: CatalogEquipment }
-  | { table: "sectors"; record: CatalogSector };
+  | { table: "sectors"; record: CatalogSector }
+  | { table: "categories"; record: CatalogCategory };
 
 export interface SyncQueueEntry {
   id?: number;
@@ -58,6 +61,7 @@ class TwCinOfflineDb extends Dexie {
   movements!: Table<MovementItem, string>;
   equipments!: Table<CatalogEquipment, string>;
   sectors!: Table<CatalogSector, number>;
+  categories!: Table<CatalogCategory, number>;
   locations!: Table<CatalogLocation, number>;
   users!: Table<TiUser, number>;
   syncQueue!: Table<SyncQueueEntry, number>;
@@ -78,6 +82,9 @@ class TwCinOfflineDb extends Dexie {
     this.version(2).stores({
       syncQueue: "++id, op_id, type, created_at, user_id",
       failedOps: "++id, op_id, user_id, failed_at"
+    });
+    this.version(3).stores({
+      categories: "id, name, is_default"
     });
   }
 }
@@ -133,14 +140,14 @@ export async function saveCachedSuggestions(suggestions: SuggestionsPayload): Pr
 
 export async function getCachedSuggestions(): Promise<SuggestionsPayload> {
   const row = await offlineDb.meta.get("suggestions");
-  return (
-    (row?.value as SuggestionsPayload | undefined) ?? {
-      equipments: [],
-      sectors: [],
-      locations: [],
-      people: []
-    }
-  );
+  const raw = row?.value as Partial<SuggestionsPayload> | undefined;
+  return {
+    equipments: raw?.equipments ?? [],
+    sectors: raw?.sectors ?? [],
+    categories: raw?.categories ?? [],
+    locations: raw?.locations ?? [],
+    people: raw?.people ?? []
+  };
 }
 
 /**
@@ -154,6 +161,7 @@ export async function clearLocalDataForLogout(userId: number): Promise<void> {
       offlineDb.movements,
       offlineDb.equipments,
       offlineDb.sectors,
+      offlineDb.categories,
       offlineDb.locations,
       offlineDb.users,
       offlineDb.syncQueue,
@@ -165,6 +173,7 @@ export async function clearLocalDataForLogout(userId: number): Promise<void> {
         offlineDb.movements.clear(),
         offlineDb.equipments.clear(),
         offlineDb.sectors.clear(),
+        offlineDb.categories.clear(),
         offlineDb.locations.clear(),
         offlineDb.users.clear(),
         offlineDb.meta.delete("suggestions"),
@@ -187,6 +196,7 @@ export async function clearAllLocalData(): Promise<void> {
       offlineDb.movements,
       offlineDb.equipments,
       offlineDb.sectors,
+      offlineDb.categories,
       offlineDb.locations,
       offlineDb.users,
       offlineDb.syncQueue,
@@ -198,6 +208,7 @@ export async function clearAllLocalData(): Promise<void> {
         offlineDb.movements.clear(),
         offlineDb.equipments.clear(),
         offlineDb.sectors.clear(),
+        offlineDb.categories.clear(),
         offlineDb.locations.clear(),
         offlineDb.users.clear(),
         offlineDb.syncQueue.clear(),

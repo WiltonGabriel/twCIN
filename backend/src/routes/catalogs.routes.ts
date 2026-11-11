@@ -1,24 +1,29 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
 import {
+  createCategorySchema,
   createEquipmentSchema,
   createLocationSchema,
   createSectorSchema,
   returnToOwnerSchema,
+  updateCategorySchema,
   updateEquipmentSchema,
   updateLocationSchema,
   updateSectorSchema
 } from "../schemas/index.js";
 import {
+  createCatalogCategory,
   createCatalogEquipment,
   createCatalogLocation,
   createCatalogSector,
   findEquipmentByIdOrUuid,
   getSuggestions,
+  listCatalogCategories,
   listCatalogEquipments,
   listCatalogLocations,
   listCatalogSectors,
   returnEquipmentToOwner,
+  updateCatalogCategory,
   updateCatalogEquipment,
   updateCatalogLocation,
   updateCatalogSector
@@ -119,6 +124,27 @@ export function registerCatalogRoutes(
     }
     const input = updateLocationSchema.parse(request.body);
     const item = updateCatalogLocation(db, id, input, request.currentUser!, request.ip);
+    return { item };
+  });
+
+  app.get("/api/catalogs/categories", { preHandler: [requireAuth] }, async (request) => {
+    const includeInactive = (request.query as { includeInactive?: string }).includeInactive === "true";
+    return { items: listCatalogCategories(db, includeInactive) };
+  });
+
+  app.post("/api/catalogs/categories", { preHandler: [requireAuth] }, async (request, reply) => {
+    const input = createCategorySchema.parse(request.body);
+    const item = createCatalogCategory(db, input, request.currentUser!, request.ip);
+    return reply.code(201).send({ item });
+  });
+
+  app.patch("/api/catalogs/categories/:id", { preHandler: [requireAuth] }, async (request) => {
+    const id = Number((request.params as { id: string }).id);
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new BadRequestError("ID inválido.");
+    }
+    const input = updateCategorySchema.parse(request.body);
+    const item = updateCatalogCategory(db, id, input, request.currentUser!, request.ip);
     return { item };
   });
 }

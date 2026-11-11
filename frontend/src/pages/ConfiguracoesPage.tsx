@@ -38,6 +38,7 @@ import { apiRequest, ApiError } from "../services/api";
 import { downloadDataUrl } from "../utils/imageEditor";
 import type {
   AuthUser,
+  CatalogCategory,
   CatalogEquipment,
   CatalogLocation,
   CatalogSector,
@@ -74,6 +75,7 @@ interface ConfiguracoesPageProps {
   equipments: CatalogEquipment[];
   movements: MovementItem[];
   sectors: CatalogSector[];
+  categories: CatalogCategory[];
   locations: CatalogLocation[];
   suggestions: SuggestionsPayload;
   online: boolean;
@@ -84,6 +86,7 @@ interface ConfiguracoesPageProps {
   onRetryFailed: (id: number, overwrite: boolean) => Promise<void>;
   onDiscardFailed: (id: number) => Promise<void>;
   onCreateSector: (payload: { name: string; is_default?: boolean }) => Promise<CatalogSector>;
+  onCreateCategory: (payload: { name: string; is_default?: boolean }) => Promise<CatalogCategory>;
   onRefresh: () => Promise<void>;
   onChangeTheme: (pref: ThemePreference) => void;
   onChangePassword: (currentPassword: string, newPassword: string) => Promise<AuthUser>;
@@ -109,7 +112,7 @@ const NAV_GROUPS: Array<{
     items: [
       { id: "organizacao", label: "Organização", hint: "Nome, unidade, contato e logo", icon: Building2 },
       { id: "aparencia", label: "Aparência", hint: "Paleta de cores e fundo", icon: Paintbrush },
-      { id: "cadastros", label: "Cadastros", hint: "Setores e locais", icon: MapPin },
+      { id: "cadastros", label: "Cadastros", hint: "Setores, categorias e locais", icon: MapPin },
       { id: "regras", label: "Regras de empréstimo", hint: "Prazo padrão", icon: CalendarClock },
       { id: "equipe", label: "Equipe", hint: "Usuários e acessos", icon: Users }
     ]
@@ -140,6 +143,7 @@ export function ConfiguracoesPage({
   equipments,
   movements,
   sectors,
+  categories,
   locations,
   suggestions,
   online,
@@ -150,6 +154,7 @@ export function ConfiguracoesPage({
   onRetryFailed,
   onDiscardFailed,
   onCreateSector,
+  onCreateCategory,
   onRefresh,
   onChangeTheme,
   onChangePassword,
@@ -427,7 +432,7 @@ export function ConfiguracoesPage({
               <h2 className="text-base font-semibold">{current.label}</h2>
               <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
                 {subTab === "aparencia" && "Paleta de cores da organização e imagem de fundo aplicadas em todo o sistema."}
-                {subTab === "cadastros" && "Setores de destino e locais de instalação usados nas movimentações."}
+                {subTab === "cadastros" && "Setores de destino, categorias de equipamentos e locais de instalação."}
                 {subTab === "regras" && "Regras aplicadas automaticamente nas novas movimentações."}
                 {subTab === "equipe" && "Contas da equipe de TI. Administradores gerenciam equipe, organização, regras e backup."}
                 {subTab === "sincronizacao" && "O que foi feito sem internet e ainda não chegou ao servidor, ou que o servidor recusou."}
@@ -448,7 +453,16 @@ export function ConfiguracoesPage({
           )}
 
           {subTab === "cadastros" && (
-            <CadastrosPanel sectors={sectors} locations={locations} suggestions={suggestions} online={online} onCreateSector={onCreateSector} onRefresh={onRefresh} />
+            <CadastrosPanel
+              sectors={sectors}
+              categories={categories}
+              locations={locations}
+              suggestions={suggestions}
+              online={online}
+              onCreateSector={onCreateSector}
+              onCreateCategory={onCreateCategory}
+              onRefresh={onRefresh}
+            />
           )}
 
           {subTab === "regras" && isAdmin && (

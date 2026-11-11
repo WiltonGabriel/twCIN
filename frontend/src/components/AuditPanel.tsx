@@ -9,6 +9,7 @@ const ENTITY_LABELS: Record<string, string> = {
   movement: "Movimentação",
   catalog_equipment: "Equipamento",
   catalog_sector: "Setor",
+  catalog_category: "Categoria",
   catalog_location: "Local",
   user: "Usuário",
   auth: "Acesso",

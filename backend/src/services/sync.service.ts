@@ -3,9 +3,11 @@ import type { z } from "zod";
 import { syncOperationSchema } from "../schemas/index.js";
 import type { AuthUser } from "../security/auth.js";
 import {
+  createCatalogCategory,
   createCatalogEquipment,
   createCatalogSector,
   getSuggestions,
+  listCatalogCategories,
   listCatalogEquipments,
   listCatalogLocations,
   listCatalogSectors,
@@ -118,6 +120,14 @@ export function processSyncBatch(
           results.push({ op_id: op.op_id, status: "applied", record: sector });
           break;
         }
+        case "category.create": {
+          const existing = db
+            .prepare("SELECT * FROM catalog_categories WHERE LOWER(name) = LOWER(?)")
+            .get(op.payload.name.trim());
+          const category = existing ?? createCatalogCategory(db, op.payload, actor, ipAddress);
+          results.push({ op_id: op.op_id, status: "applied", record: category });
+          break;
+        }
       }
     } catch (err) {
       if (err instanceof ConflictError) {
@@ -149,6 +159,7 @@ export function buildSyncSnapshot(db: DatabaseSync) {
     movements: listMovements(db, { includeFinished: true }),
     catalog_equipments: listCatalogEquipments(db, true),
     catalog_sectors: listCatalogSectors(db, true),
+    catalog_categories: listCatalogCategories(db, true),
     catalog_locations: listCatalogLocations(db, true),
     suggestions: getSuggestions(db),
     users: listUsers(db)

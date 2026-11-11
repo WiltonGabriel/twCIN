@@ -22,7 +22,8 @@ function ensureColumn(
 const MIGRATIONS: Array<{ version: number; name: string; up: (db: DatabaseSync) => void }> = [
   { version: 1, name: "esquema-base", up: applyBaselineSchema },
   { version: 2, name: "perfis-usuario", up: addUserRoleMigration },
-  { version: 3, name: "setor-origem-recebimento", up: addEquipmentOriginAndReceivedAtMigration }
+  { version: 3, name: "setor-origem-recebimento", up: addEquipmentOriginAndReceivedAtMigration },
+  { version: 4, name: "catalogo-categorias", up: addCategoriesCatalogMigration }
 ];
 
 function addUserRoleMigration(db: DatabaseSync): void {
@@ -50,6 +51,46 @@ function addEquipmentOriginAndReceivedAtMigration(db: DatabaseSync): void {
       AND (TRIM(origin) != '' OR TRIM(received_from) != '');
 
     CREATE INDEX IF NOT EXISTS idx_equip_origin_sector ON catalog_equipments(origin_sector_id);
+  `);
+}
+
+function addCategoriesCatalogMigration(db: DatabaseSync): void {
+  ensureColumn(
+    db,
+    "catalog_equipments",
+    "category_id",
+    "INTEGER REFERENCES catalog_categories(id) ON DELETE SET NULL"
+  );
+
+  const now = new Date().toISOString();
+  const rows = db
+    .prepare("SELECT DISTINCT TRIM(category) AS name FROM catalog_equipments WHERE TRIM(category) != ''")
+    .all() as Array<{ name: string }>;
+
+  const seen = new Set<string>();
+  const insertCat = db.prepare(`
+    INSERT OR IGNORE INTO catalog_categories (name, is_default, active, created_at, updated_at)
+    VALUES (?, 0, 1, ?, ?)
+  `);
+  for (const row of rows) {
+    const key = row.name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    insertCat.run(row.name, now, now);
+  }
+
+  db.exec(`
+    UPDATE catalog_equipments
+    SET category_id = (
+      SELECT c.id
+      FROM catalog_categories c
+      WHERE LOWER(TRIM(c.name)) = LOWER(TRIM(catalog_equipments.category))
+      LIMIT 1
+    )
+    WHERE category_id IS NULL
+      AND TRIM(category) != '';
+
+    CREATE INDEX IF NOT EXISTS idx_equip_category ON catalog_equipments(category_id);
   `);
 }
 
@@ -110,11 +151,21 @@ function applyBaselineSchema(db: DatabaseSync): void {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS catalog_categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS catalog_equipments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       client_uuid TEXT,
       name TEXT NOT NULL,
       patrimony TEXT UNIQUE,
+      category_id INTEGER REFERENCES catalog_categories(id) ON DELETE SET NULL,
       category TEXT NOT NULL DEFAULT '',
       ownership_type TEXT NOT NULL DEFAULT 'proprio_ti',
       condition_status TEXT NOT NULL DEFAULT 'disponivel',
@@ -227,6 +278,8 @@ function applyBaselineSchema(db: DatabaseSync): void {
   ensureColumn(db, "catalog_equipments", "owner_received_by", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "catalog_equipments", "owner_returned_by_name", "TEXT NOT NULL DEFAULT ''");
 
+  ensureColumn(db, "catalog_equipments", "category_id", "INTEGER REFERENCES catalog_categories(id) ON DELETE SET NULL");
+
   const missingUuids = db
     .prepare("SELECT id FROM catalog_equipments WHERE client_uuid IS NULL OR client_uuid = ''")
     .all() as Array<{ id: number }>;
@@ -239,5 +292,6 @@ function applyBaselineSchema(db: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_equip_client_uuid ON catalog_equipments(client_uuid);
     CREATE INDEX IF NOT EXISTS idx_equip_condition ON catalog_equipments(condition_status, ownership_type);
     CREATE INDEX IF NOT EXISTS idx_equip_origin_sector ON catalog_equipments(origin_sector_id);
+    CREATE INDEX IF NOT EXISTS idx_equip_category ON catalog_equipments(category_id);
   `);
 }

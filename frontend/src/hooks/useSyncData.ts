@@ -18,8 +18,10 @@ import {
 import { apiRequest, isNetworkError } from "../services/api";
 import type {
   AuthUser,
+  CatalogCategory,
   CatalogEquipment,
   CatalogLocation,
+  CatalogNamedItem,
   CatalogSector,
   EquipmentCondition,
   EquipmentOwnership,
@@ -66,11 +68,13 @@ export function useSyncData(
   const [movements, setMovements] = useState<MovementItem[]>([]);
   const [equipments, setEquipments] = useState<CatalogEquipment[]>([]);
   const [sectors, setSectors] = useState<CatalogSector[]>([]);
+  const [categories, setCategories] = useState<CatalogCategory[]>([]);
   const [locations, setLocations] = useState<CatalogLocation[]>([]);
   const [users, setUsers] = useState<TiUser[]>([]);
   const [suggestions, setSuggestions] = useState<SuggestionsPayload>({
     equipments: [],
     sectors: [],
+    categories: [],
     locations: [],
     people: []
   });
@@ -101,10 +105,11 @@ export function useSyncData(
   const loadFromLocalDb = useCallback(async () => {
     const userId = userIdRef.current;
     if (userId === null) return;
-    const [m, eq, sec, loc, usr, sug, cachedSettings, pend, failed] = await Promise.all([
+    const [m, eq, sec, cat, loc, usr, sug, cachedSettings, pend, failed] = await Promise.all([
       offlineDb.movements.toArray(),
       offlineDb.equipments.toArray(),
       offlineDb.sectors.toArray(),
+      offlineDb.categories.toArray(),
       offlineDb.locations.toArray(),
       offlineDb.users.toArray(),
       getCachedSuggestions(),
@@ -115,17 +120,22 @@ export function useSyncData(
 
     onSettingsSyncedRef.current?.(cachedSettings);
 
+    const sortNamed = <T extends CatalogNamedItem>(arr: T[]) =>
+      arr.sort((x, y) => {
+        if (x.is_default !== y.is_default) return y.is_default - x.is_default;
+        return x.name.localeCompare(y.name, "pt-BR");
+      });
+
     m.sort((x, y) => y.out_at.localeCompare(x.out_at));
     eq.sort((x, y) => y.updated_at.localeCompare(x.updated_at));
-    sec.sort((x, y) => {
-      if (x.is_default !== y.is_default) return y.is_default - x.is_default;
-      return x.name.localeCompare(y.name, "pt-BR");
-    });
+    sortNamed(sec);
+    sortNamed(cat);
     loc.sort((x, y) => x.name.localeCompare(y.name, "pt-BR"));
 
     setMovements(m);
     setEquipments(eq);
     setSectors(sec);
+    setCategories(cat);
     setLocations(loc);
     setUsers(usr);
     setSuggestions(sug);
@@ -239,6 +249,7 @@ export function useSyncData(
   const createEquipment = async (payload: {
     name: string;
     patrimony?: string;
+    category_id?: number | null;
     category?: string;
     ownership_type: EquipmentOwnership;
     condition_status: EquipmentCondition;
@@ -254,7 +265,14 @@ export function useSyncData(
     const now = new Date().toISOString();
     const safeOriginSectorId =
       payload.origin_sector_id && payload.origin_sector_id > 0 ? payload.origin_sector_id : null;
-    const wirePayload = { ...payload, origin_sector_id: safeOriginSectorId, client_uuid };
+    const safeCategoryId =
+      payload.category_id && payload.category_id > 0 ? payload.category_id : null;
+    const wirePayload = {
+      ...payload,
+      origin_sector_id: safeOriginSectorId,
+      category_id: safeCategoryId,
+      client_uuid
+    };
 
     if (navigator.onLine) {
       try {
@@ -274,6 +292,7 @@ export function useSyncData(
       client_uuid,
       name: payload.name.trim(),
       patrimony: payload.patrimony?.trim() || null,
+      category_id: safeCategoryId,
       category: payload.category?.trim() || "",
       ownership_type: payload.ownership_type,
       condition_status: payload.condition_status,
@@ -307,6 +326,7 @@ export function useSyncData(
     patch: Partial<{
       name: string;
       patrimony: string;
+      category_id: number | null;
       category: string;
       ownership_type: EquipmentOwnership;
       condition_status: EquipmentCondition;
@@ -321,10 +341,15 @@ export function useSyncData(
   ): Promise<void> => {
     if (!user) return;
     const now = new Date().toISOString();
-    const wirePatch =
-      patch.origin_sector_id !== undefined
-        ? { ...patch, origin_sector_id: patch.origin_sector_id && patch.origin_sector_id > 0 ? patch.origin_sector_id : null }
-        : patch;
+    const wirePatch = {
+      ...patch,
+      ...(patch.origin_sector_id !== undefined
+        ? { origin_sector_id: patch.origin_sector_id && patch.origin_sector_id > 0 ? patch.origin_sector_id : null }
+        : {}),
+      ...(patch.category_id !== undefined
+        ? { category_id: patch.category_id && patch.category_id > 0 ? patch.category_id : null }
+        : {})
+    };
 
     if (navigator.onLine && item.id > 0) {
       try {
@@ -603,21 +628,24 @@ export function useSyncData(
     });
   };
 
-  const createSector = async (payload: {
-    name: string;
-    is_default?: boolean;
-  }): Promise<CatalogSector> => {
-    const trimmed = payload.name.trim();
-    const existingLocal = sectors.find((s) => s.name.toLowerCase() === trimmed.toLowerCase());
+  const createNamedCatalogEntry = async <T extends CatalogNamedItem>(options: {
+    list: T[];
+    endpoint: string;
+    table: "sectors" | "categories";
+    opType: "sector.create" | "category.create";
+    payload: { name: string; is_default?: boolean };
+  }): Promise<T> => {
+    const trimmed = options.payload.name.trim();
+    const existingLocal = options.list.find((item) => item.name.toLowerCase() === trimmed.toLowerCase());
     if (existingLocal) {
       return existingLocal;
     }
 
     if (navigator.onLine) {
       try {
-        const res = await apiRequest<{ item: CatalogSector }>("/api/catalogs/sectors", {
+        const res = await apiRequest<{ item: T }>(options.endpoint, {
           method: "POST",
-          body: JSON.stringify({ name: trimmed, is_default: Boolean(payload.is_default) })
+          body: JSON.stringify({ name: trimmed, is_default: Boolean(options.payload.is_default) })
         });
         await syncNow();
         return res.item;
@@ -627,27 +655,53 @@ export function useSyncData(
     }
 
     const now = new Date().toISOString();
-    const optimistic: CatalogSector = {
+    const optimistic = {
       id: nextTempId(),
       name: trimmed,
-      is_default: payload.is_default ? 1 : 0,
+      is_default: options.payload.is_default ? 1 : 0,
       active: 1,
       created_at: now,
       updated_at: now
-    };
-    await offlineDb.sectors.put(optimistic);
+    } as T;
+    if (options.table === "sectors") {
+      await offlineDb.sectors.put(optimistic as CatalogSector);
+    } else {
+      await offlineDb.categories.put(optimistic as CatalogCategory);
+    }
     await queueMutation({
-      type: "sector.create",
-      payload: { name: trimmed, is_default: Boolean(payload.is_default) },
-      optimistic: { table: "sectors", record: optimistic }
+      type: options.opType,
+      payload: { name: trimmed, is_default: Boolean(options.payload.is_default) },
+      optimistic:
+        options.table === "sectors"
+          ? { table: "sectors", record: optimistic as CatalogSector }
+          : { table: "categories", record: optimistic as CatalogCategory }
     });
     return optimistic;
   };
+
+  const createSector = (payload: { name: string; is_default?: boolean }): Promise<CatalogSector> =>
+    createNamedCatalogEntry<CatalogSector>({
+      list: sectors,
+      endpoint: "/api/catalogs/sectors",
+      table: "sectors",
+      opType: "sector.create",
+      payload
+    });
+
+  const createCategory = (payload: { name: string; is_default?: boolean }): Promise<CatalogCategory> =>
+    createNamedCatalogEntry<CatalogCategory>({
+      list: categories,
+      endpoint: "/api/catalogs/categories",
+      table: "categories",
+      opType: "category.create",
+      payload
+    });
 
   return {
     movements,
     equipments,
     sectors,
+    categories,
     locations,
     users,
     suggestions,
@@ -667,6 +721,7 @@ export function useSyncData(
     updateMovement,
     returnMovement,
     returnEquipmentToOwner,
-    createSector
+    createSector,
+    createCategory
   };
 }

@@ -98,8 +98,9 @@ function makeSnapshot(overrides?: Partial<SnapshotResponse>): SnapshotResponse {
     movements: [],
     catalog_equipments: [makeEquipment()],
     catalog_sectors: [],
+    catalog_categories: [],
     catalog_locations: [],
-    suggestions: { equipments: [], sectors: [], locations: [], people: [] },
+    suggestions: { equipments: [], sectors: [], categories: [], locations: [], people: [] },
     users: [],
     ...overrides
   };
@@ -113,6 +114,7 @@ describe("twCIN Frontend — labels e motor offline", () => {
         offlineDb.movements,
         offlineDb.equipments,
         offlineDb.sectors,
+        offlineDb.categories,
         offlineDb.locations,
         offlineDb.users,
         offlineDb.syncQueue,
@@ -124,6 +126,7 @@ describe("twCIN Frontend — labels e motor offline", () => {
           offlineDb.movements.clear(),
           offlineDb.equipments.clear(),
           offlineDb.sectors.clear(),
+          offlineDb.categories.clear(),
           offlineDb.locations.clear(),
           offlineDb.users.clear(),
           offlineDb.syncQueue.clear(),
@@ -348,5 +351,32 @@ describe("twCIN Frontend — labels e motor offline", () => {
 
     assert.equal(isIsoInLocalDateRange("2026-11-10T15:00:00.000Z", "2026-11-10", "2026-11-10"), true);
     assert.equal(isIsoInLocalDateRange("2026-11-08T12:00:00.000Z", "2026-11-10", ""), false);
+  });
+
+  it("hidrata catálogo de categorias do snapshot e reaplica categoria criada offline ainda na fila", async () => {
+    const now = "2026-11-11T10:00:00.000Z";
+    await enqueueOfflineOperation({
+      type: "category.create",
+      user_id: 1,
+      payload: { name: "Scanner", is_default: false },
+      optimistic: {
+        table: "categories",
+        record: { id: -50, name: "Scanner", is_default: 0, active: 1, created_at: now, updated_at: now }
+      }
+    });
+
+    await applySnapshotToLocalDb(
+      makeSnapshot({
+        catalog_categories: [
+          { id: 1, name: "Notebook", is_default: 1, active: 1, created_at: now, updated_at: now }
+        ]
+      })
+    );
+
+    const cached = await offlineDb.categories.toArray();
+    assert.deepEqual(
+      cached.map((c) => c.name).sort(),
+      ["Notebook", "Scanner"]
+    );
   });
 });

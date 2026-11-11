@@ -37,6 +37,7 @@ export interface CatalogEquipment {
   client_uuid: string;
   name: string;
   patrimony: string | null;
+  category_id?: number | null;
   category: string;
   ownership_type: EquipmentOwnership;
   condition_status: EquipmentCondition;
@@ -90,7 +91,7 @@ export interface MovementItem {
   _pendingSync?: boolean;
 }
 
-export interface CatalogSector {
+export interface CatalogNamedItem {
   id: number;
   name: string;
   is_default: number;
@@ -98,6 +99,9 @@ export interface CatalogSector {
   created_at: string;
   updated_at: string;
 }
+
+export type CatalogSector = CatalogNamedItem;
+export type CatalogCategory = CatalogNamedItem;
 
 export interface CatalogLocation {
   id: number;
@@ -110,6 +114,7 @@ export interface CatalogLocation {
 export interface SuggestionsPayload {
   equipments: Array<{ id: number | null; name: string; patrimony: string }>;
   sectors: Array<{ id: number | null; name: string; is_default: boolean }>;
+  categories: Array<{ id: number | null; name: string; is_default: boolean }>;
   locations: string[];
   people: string[];
 }

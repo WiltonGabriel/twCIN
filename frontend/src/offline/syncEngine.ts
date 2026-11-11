@@ -1,5 +1,6 @@
 import { apiRequest, ApiError, isNetworkError } from "../services/api";
 import type {
+  CatalogCategory,
   CatalogEquipment,
   CatalogLocation,
   CatalogSector,
@@ -24,6 +25,7 @@ export interface SnapshotResponse {
   movements: MovementItem[];
   catalog_equipments: CatalogEquipment[];
   catalog_sectors: CatalogSector[];
+  catalog_categories?: CatalogCategory[];
   catalog_locations: CatalogLocation[];
   suggestions: SuggestionsPayload;
   users: TiUser[];
@@ -52,6 +54,7 @@ export async function applySnapshotToLocalDb(snapshot: SnapshotResponse): Promis
       offlineDb.movements,
       offlineDb.equipments,
       offlineDb.sectors,
+      offlineDb.categories,
       offlineDb.locations,
       offlineDb.users,
       offlineDb.meta,
@@ -73,6 +76,12 @@ export async function applySnapshotToLocalDb(snapshot: SnapshotResponse): Promis
         await offlineDb.sectors.bulkPut(snapshot.catalog_sectors);
       }
 
+      await offlineDb.categories.clear();
+      const cats = snapshot.catalog_categories ?? [];
+      if (cats.length > 0) {
+        await offlineDb.categories.bulkPut(cats);
+      }
+
       await offlineDb.locations.clear();
       if (snapshot.catalog_locations.length > 0) {
         await offlineDb.locations.bulkPut(snapshot.catalog_locations);
@@ -86,7 +95,10 @@ export async function applySnapshotToLocalDb(snapshot: SnapshotResponse): Promis
       if (snapshot.settings) {
         await saveCachedSettings(snapshot.settings);
       }
-      await saveCachedSuggestions(snapshot.suggestions);
+      await saveCachedSuggestions({
+        ...snapshot.suggestions,
+        categories: snapshot.suggestions.categories ?? []
+      });
       await offlineDb.meta.put({ key: "lastSyncAt", value: snapshot.server_time });
 
       // Operações ainda na fila (enfileiradas durante o envio, ou de outro usuário) continuam
@@ -112,8 +124,10 @@ export async function applySnapshotToLocalDb(snapshot: SnapshotResponse): Promis
           }
         } else if (entry.optimistic.table === "equipments") {
           await offlineDb.equipments.put(entry.optimistic.record);
-        } else {
+        } else if (entry.optimistic.table === "sectors") {
           await offlineDb.sectors.put(entry.optimistic.record);
+        } else {
+          await offlineDb.categories.put(entry.optimistic.record);
         }
       }
     }

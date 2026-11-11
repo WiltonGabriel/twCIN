@@ -42,6 +42,38 @@ function resolveOriginFields(
   };
 }
 
+function resolveCategoryFields(
+  db: DatabaseSync,
+  categoryId: number | null | undefined,
+  categoryText: string | undefined,
+  fallbackId: number | null,
+  fallbackName: string
+): { categoryId: number | null; category: string } {
+  if (categoryId !== undefined && categoryId !== null) {
+    const row = db
+      .prepare("SELECT id, name FROM catalog_categories WHERE id = ?")
+      .get(categoryId) as { id: number; name: string } | undefined;
+    if (!row) {
+      throw new BadRequestError("Categoria informada não existe.");
+    }
+    return { categoryId: row.id, category: row.name };
+  }
+  if (categoryText !== undefined) {
+    const trimmed = categoryText.trim();
+    if (!trimmed) {
+      return { categoryId: null, category: "" };
+    }
+    const matched = db
+      .prepare("SELECT id, name FROM catalog_categories WHERE LOWER(name) = LOWER(?)")
+      .get(trimmed) as { id: number; name: string } | undefined;
+    if (matched) {
+      return { categoryId: matched.id, category: matched.name };
+    }
+    return { categoryId: null, category: trimmed };
+  }
+  return { categoryId: fallbackId, category: fallbackName };
+}
+
 export type EquipmentOwnership = "proprio_ti" | "estoque" | "terceiro";
 export type EquipmentCondition =
   | "disponivel"
@@ -57,6 +89,7 @@ export interface CatalogEquipmentRow {
   client_uuid: string;
   name: string;
   patrimony: string | null;
+  category_id: number | null;
   category: string;
   ownership_type: EquipmentOwnership;
   condition_status: EquipmentCondition;
@@ -79,7 +112,7 @@ export interface CatalogEquipmentRow {
   updated_at: string;
 }
 
-export interface CatalogSectorRow {
+export interface CatalogNamedRow {
   id: number;
   name: string;
   is_default: number;
@@ -87,6 +120,9 @@ export interface CatalogSectorRow {
   created_at: string;
   updated_at: string;
 }
+
+export type CatalogSectorRow = CatalogNamedRow;
+export type CatalogCategoryRow = CatalogNamedRow;
 
 export interface CatalogLocationRow {
   id: number;
@@ -99,6 +135,7 @@ export interface CatalogLocationRow {
 export interface SuggestionsPayload {
   equipments: Array<{ id: number | null; name: string; patrimony: string }>;
   sectors: Array<{ id: number | null; name: string; is_default: boolean }>;
+  categories: Array<{ id: number | null; name: string; is_default: boolean }>;
   locations: string[];
   people: string[];
 }
@@ -134,6 +171,7 @@ export function createCatalogEquipment(
     client_uuid?: string;
     name: string;
     patrimony?: string;
+    category_id?: number | null;
     category?: string;
     ownership_type?: EquipmentOwnership;
     condition_status?: EquipmentCondition;
@@ -162,6 +200,7 @@ export function createCatalogEquipment(
   }
 
   const resolvedOrigin = resolveOriginFields(db, input.origin_sector_id, input.origin, null, "");
+  const resolvedCategory = resolveCategoryFields(db, input.category_id, input.category, null, "");
 
   if (pat) {
     const dup = db.prepare("SELECT id FROM catalog_equipments WHERE LOWER(patrimony) = LOWER(?)").get(pat);
@@ -173,15 +212,16 @@ export function createCatalogEquipment(
   return withTransaction(db, () => {
     const info = db.prepare(`
       INSERT INTO catalog_equipments (
-        client_uuid, name, patrimony, category, ownership_type, condition_status,
+        client_uuid, name, patrimony, category_id, category, ownership_type, condition_status,
         origin_sector_id, origin, received_from, received_at, reason, notes, active, version,
         created_by_id, created_by_name, updated_by_id, updated_by_name, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?)
     `).run(
       clientUuid,
       input.name.trim(),
       pat,
-      input.category?.trim() || "",
+      resolvedCategory.categoryId,
+      resolvedCategory.category,
       input.ownership_type || "proprio_ti",
       input.condition_status || "disponivel",
       resolvedOrigin.originSectorId,
@@ -221,6 +261,7 @@ export function updateCatalogEquipment(
   input: {
     name?: string;
     patrimony?: string;
+    category_id?: number | null;
     category?: string;
     ownership_type?: EquipmentOwnership;
     condition_status?: EquipmentCondition;
@@ -284,6 +325,13 @@ export function updateCatalogEquipment(
     current.origin_sector_id,
     current.origin
   );
+  const resolvedCategory = resolveCategoryFields(
+    db,
+    input.category_id,
+    input.category,
+    current.category_id,
+    current.category
+  );
 
   const nextPat = input.patrimony !== undefined ? input.patrimony.trim() || null : current.patrimony;
   if (nextPat) {
@@ -301,6 +349,7 @@ export function updateCatalogEquipment(
       UPDATE catalog_equipments SET
         name = ?,
         patrimony = ?,
+        category_id = ?,
         category = ?,
         ownership_type = ?,
         condition_status = ?,
@@ -319,7 +368,8 @@ export function updateCatalogEquipment(
     `).run(
       input.name !== undefined ? input.name.trim() : current.name,
       nextPat,
-      input.category !== undefined ? input.category.trim() : current.category,
+      resolvedCategory.categoryId,
+      resolvedCategory.category,
       input.ownership_type !== undefined ? input.ownership_type : current.ownership_type,
       input.condition_status !== undefined ? input.condition_status : current.condition_status,
       resolvedOrigin.originSectorId,
@@ -428,47 +478,86 @@ export function returnEquipmentToOwner(
   });
 }
 
-export function listCatalogSectors(db: DatabaseSync, includeInactive = false): CatalogSectorRow[] {
-  const where = includeInactive ? "" : "WHERE active = 1";
-  return db
-    .prepare(`SELECT * FROM catalog_sectors ${where} ORDER BY is_default DESC, name ASC`)
-    .all() as unknown as CatalogSectorRow[];
+interface NamedCatalogSpec {
+  table: "catalog_sectors" | "catalog_categories";
+  entity: "catalog_sector" | "catalog_category";
+  label: string;
+  alreadyExistsError: string;
+  notFoundError: string;
+  duplicateRenameError: string;
+  onSyncEquipmentLinks?: (db: DatabaseSync, id: number, name: string) => void;
 }
 
-export function createCatalogSector(
+const SECTOR_CATALOG: NamedCatalogSpec = {
+  table: "catalog_sectors",
+  entity: "catalog_sector",
+  label: "Setor",
+  alreadyExistsError: "Este setor já está cadastrado.",
+  notFoundError: "Setor não encontrado.",
+  duplicateRenameError: "Já existe outro setor com este nome."
+};
+
+const CATEGORY_CATALOG: NamedCatalogSpec = {
+  table: "catalog_categories",
+  entity: "catalog_category",
+  label: "Categoria",
+  alreadyExistsError: "Esta categoria já está cadastrada.",
+  notFoundError: "Categoria não encontrada.",
+  duplicateRenameError: "Já existe outra categoria com este nome.",
+  onSyncEquipmentLinks: (db, id, name) => {
+    db.prepare("UPDATE catalog_equipments SET category = ? WHERE category_id = ?").run(name, id);
+    db.prepare(
+      "UPDATE catalog_equipments SET category_id = ?, category = ? WHERE category_id IS NULL AND LOWER(TRIM(category)) = LOWER(?)"
+    ).run(id, name, name);
+  }
+};
+
+function listNamedCatalog(db: DatabaseSync, spec: NamedCatalogSpec, includeInactive = false): CatalogNamedRow[] {
+  const where = includeInactive ? "" : "WHERE active = 1";
+  return db
+    .prepare(`SELECT * FROM ${spec.table} ${where} ORDER BY is_default DESC, name ASC`)
+    .all() as unknown as CatalogNamedRow[];
+}
+
+function createNamedCatalog(
   db: DatabaseSync,
+  spec: NamedCatalogSpec,
   input: { name: string; is_default?: boolean },
   actor: AuthUser,
   ipAddress: string
-): CatalogSectorRow {
+): CatalogNamedRow {
   const trimmed = input.name.trim();
-  const dup = db.prepare("SELECT id FROM catalog_sectors WHERE LOWER(name) = LOWER(?)").get(trimmed);
+  const dup = db.prepare(`SELECT id FROM ${spec.table} WHERE LOWER(name) = LOWER(?)`).get(trimmed);
   if (dup) {
-    throw new ConflictError("Este setor já está cadastrado.");
+    throw new ConflictError(spec.alreadyExistsError);
   }
 
   const now = new Date().toISOString();
   return withTransaction(db, () => {
     if (input.is_default) {
-      db.prepare("UPDATE catalog_sectors SET is_default = 0, updated_at = ?").run(now);
+      db.prepare(`UPDATE ${spec.table} SET is_default = 0, updated_at = ?`).run(now);
     }
 
-    const info = db.prepare(`
-      INSERT INTO catalog_sectors (name, is_default, active, created_at, updated_at)
-      VALUES (?, ?, 1, ?, ?)
-    `).run(trimmed, input.is_default ? 1 : 0, now, now);
+    const info = db
+      .prepare(
+        `INSERT INTO ${spec.table} (name, is_default, active, created_at, updated_at) VALUES (?, ?, 1, ?, ?)`
+      )
+      .run(trimmed, input.is_default ? 1 : 0, now, now);
+
+    const createdId = Number(info.lastInsertRowid);
+    spec.onSyncEquipmentLinks?.(db, createdId, trimmed);
 
     const created = db
-      .prepare("SELECT * FROM catalog_sectors WHERE id = ?")
-      .get(Number(info.lastInsertRowid)) as unknown as CatalogSectorRow;
+      .prepare(`SELECT * FROM ${spec.table} WHERE id = ?`)
+      .get(createdId) as unknown as CatalogNamedRow;
 
     writeAuditLog(db, {
       userId: actor.id,
       userName: actor.full_name,
       action: "CREATE",
-      entity: "catalog_sector",
+      entity: spec.entity,
       entityId: created.id,
-      summary: `Setor cadastrado: ${created.name}`,
+      summary: `${spec.label} cadastrad${spec.label === "Categoria" ? "a" : "o"}: ${created.name}`,
       after: created,
       ipAddress
     });
@@ -477,34 +566,35 @@ export function createCatalogSector(
   });
 }
 
-export function updateCatalogSector(
+function updateNamedCatalog(
   db: DatabaseSync,
+  spec: NamedCatalogSpec,
   id: number,
   input: { name?: string; is_default?: boolean; active?: boolean },
   actor: AuthUser,
   ipAddress: string
-): CatalogSectorRow {
-  const current = db.prepare("SELECT * FROM catalog_sectors WHERE id = ?").get(id) as CatalogSectorRow | undefined;
+): CatalogNamedRow {
+  const current = db.prepare(`SELECT * FROM ${spec.table} WHERE id = ?`).get(id) as CatalogNamedRow | undefined;
   if (!current) {
-    throw new NotFoundError("Setor não encontrado.");
+    throw new NotFoundError(spec.notFoundError);
   }
 
   const nextName = input.name !== undefined ? input.name.trim() : current.name;
   const dup = db
-    .prepare("SELECT id FROM catalog_sectors WHERE LOWER(name) = LOWER(?) AND id != ?")
+    .prepare(`SELECT id FROM ${spec.table} WHERE LOWER(name) = LOWER(?) AND id != ?`)
     .get(nextName, id);
   if (dup) {
-    throw new ConflictError("Já existe outro setor com este nome.");
+    throw new ConflictError(spec.duplicateRenameError);
   }
 
   const now = new Date().toISOString();
   return withTransaction(db, () => {
     if (input.is_default === true) {
-      db.prepare("UPDATE catalog_sectors SET is_default = 0, updated_at = ?").run(now);
+      db.prepare(`UPDATE ${spec.table} SET is_default = 0, updated_at = ?`).run(now);
     }
 
     db.prepare(`
-      UPDATE catalog_sectors SET name = ?, is_default = ?, active = ?, updated_at = ?
+      UPDATE ${spec.table} SET name = ?, is_default = ?, active = ?, updated_at = ?
       WHERE id = ?
     `).run(
       nextName,
@@ -514,14 +604,16 @@ export function updateCatalogSector(
       id
     );
 
-    const updated = db.prepare("SELECT * FROM catalog_sectors WHERE id = ?").get(id) as unknown as CatalogSectorRow;
+    spec.onSyncEquipmentLinks?.(db, id, nextName);
+
+    const updated = db.prepare(`SELECT * FROM ${spec.table} WHERE id = ?`).get(id) as unknown as CatalogNamedRow;
     writeAuditLog(db, {
       userId: actor.id,
       userName: actor.full_name,
       action: "UPDATE",
-      entity: "catalog_sector",
+      entity: spec.entity,
       entityId: updated.id,
-      summary: `Setor atualizado: ${updated.name}`,
+      summary: `${spec.label} atualizad${spec.label === "Categoria" ? "a" : "o"}: ${updated.name}`,
       before: current,
       after: updated,
       ipAddress
@@ -529,6 +621,52 @@ export function updateCatalogSector(
 
     return updated;
   });
+}
+
+export function listCatalogSectors(db: DatabaseSync, includeInactive = false): CatalogSectorRow[] {
+  return listNamedCatalog(db, SECTOR_CATALOG, includeInactive);
+}
+
+export function createCatalogSector(
+  db: DatabaseSync,
+  input: { name: string; is_default?: boolean },
+  actor: AuthUser,
+  ipAddress: string
+): CatalogSectorRow {
+  return createNamedCatalog(db, SECTOR_CATALOG, input, actor, ipAddress);
+}
+
+export function updateCatalogSector(
+  db: DatabaseSync,
+  id: number,
+  input: { name?: string; is_default?: boolean; active?: boolean },
+  actor: AuthUser,
+  ipAddress: string
+): CatalogSectorRow {
+  return updateNamedCatalog(db, SECTOR_CATALOG, id, input, actor, ipAddress);
+}
+
+export function listCatalogCategories(db: DatabaseSync, includeInactive = false): CatalogCategoryRow[] {
+  return listNamedCatalog(db, CATEGORY_CATALOG, includeInactive);
+}
+
+export function createCatalogCategory(
+  db: DatabaseSync,
+  input: { name: string; is_default?: boolean },
+  actor: AuthUser,
+  ipAddress: string
+): CatalogCategoryRow {
+  return createNamedCatalog(db, CATEGORY_CATALOG, input, actor, ipAddress);
+}
+
+export function updateCatalogCategory(
+  db: DatabaseSync,
+  id: number,
+  input: { name?: string; is_default?: boolean; active?: boolean },
+  actor: AuthUser,
+  ipAddress: string
+): CatalogCategoryRow {
+  return updateNamedCatalog(db, CATEGORY_CATALOG, id, input, actor, ipAddress);
 }
 
 export function listCatalogLocations(db: DatabaseSync, includeInactive = false): CatalogLocationRow[] {
@@ -629,6 +767,33 @@ export function updateCatalogLocation(
   });
 }
 
+function collectNamedSuggestions(
+  catalogRows: CatalogNamedRow[],
+  inactiveNames: Set<string>,
+  historicalRows: Array<{ name: string }>
+): Array<{ id: number | null; name: string; is_default: boolean }> {
+  const map = new Map<string, { id: number | null; name: string; is_default: boolean }>();
+  for (const item of catalogRows) {
+    map.set(item.name.toLowerCase(), {
+      id: item.id,
+      name: item.name,
+      is_default: item.is_default === 1
+    });
+  }
+  for (const row of historicalRows) {
+    const trimmed = row.name.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (!map.has(key) && !inactiveNames.has(key)) {
+      map.set(key, { id: null, name: trimmed, is_default: false });
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => {
+    if (a.is_default !== b.is_default) return a.is_default ? -1 : 1;
+    return a.name.localeCompare(b.name, "pt-BR");
+  });
+}
+
 export function getSuggestions(db: DatabaseSync): SuggestionsPayload {
   const catEquips = listCatalogEquipments(db, false);
   const equipmentMap = new Map<string, { id: number | null; name: string; patrimony: string }>();
@@ -652,6 +817,11 @@ export function getSuggestions(db: DatabaseSync): SuggestionsPayload {
       (s) => s.name.toLowerCase()
     )
   );
+  const inactiveCategoryNames = new Set(
+    (db.prepare("SELECT name FROM catalog_categories WHERE active = 0").all() as Array<{ name: string }>).map(
+      (c) => c.name.toLowerCase()
+    )
+  );
   const inactiveLocationNames = new Set(
     (db.prepare("SELECT name FROM catalog_locations WHERE active = 0").all() as Array<{ name: string }>).map(
       (l) => l.name.toLowerCase()
@@ -669,25 +839,12 @@ export function getSuggestions(db: DatabaseSync): SuggestionsPayload {
     }
   }
 
-  const catSectors = listCatalogSectors(db, false);
-  const sectorMap = new Map<string, { id: number | null; name: string; is_default: boolean }>();
-  for (const sec of catSectors) {
-    sectorMap.set(sec.name.toLowerCase(), {
-      id: sec.id,
-      name: sec.name,
-      is_default: sec.is_default === 1
-    });
-  }
-
   const recentSectorRows = db
     .prepare("SELECT DISTINCT sector_name AS name FROM movements WHERE sector_name != ''")
     .all() as Array<{ name: string }>;
-
-  for (const row of recentSectorRows) {
-    if (!sectorMap.has(row.name.toLowerCase()) && !inactiveSectorNames.has(row.name.toLowerCase())) {
-      sectorMap.set(row.name.toLowerCase(), { id: null, name: row.name, is_default: false });
-    }
-  }
+  const recentCategoryRows = db
+    .prepare("SELECT DISTINCT TRIM(category) AS name FROM catalog_equipments WHERE TRIM(category) != ''")
+    .all() as Array<{ name: string }>;
 
   const locationSet = new Set<string>();
   for (const loc of listCatalogLocations(db, false)) {
@@ -718,10 +875,8 @@ export function getSuggestions(db: DatabaseSync): SuggestionsPayload {
 
   return {
     equipments: Array.from(equipmentMap.values()).sort((a, b) => a.name.localeCompare(b.name, "pt-BR")),
-    sectors: Array.from(sectorMap.values()).sort((a, b) => {
-      if (a.is_default !== b.is_default) return a.is_default ? -1 : 1;
-      return a.name.localeCompare(b.name, "pt-BR");
-    }),
+    sectors: collectNamedSuggestions(listCatalogSectors(db, false), inactiveSectorNames, recentSectorRows),
+    categories: collectNamedSuggestions(listCatalogCategories(db, false), inactiveCategoryNames, recentCategoryRows),
     locations: Array.from(locationSet).sort((a, b) => a.localeCompare(b, "pt-BR")),
     people: Array.from(peopleSet).sort((a, b) => a.localeCompare(b, "pt-BR"))
   };

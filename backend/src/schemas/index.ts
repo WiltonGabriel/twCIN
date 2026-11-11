@@ -157,6 +157,7 @@ export const createEquipmentSchema = z.object({
   client_uuid: z.string().uuid().optional(),
   name: z.string().trim().min(1, "Informe o nome do equipamento.").max(160),
   patrimony: z.string().trim().max(80).optional().default(""),
+  category_id: z.number().int().positive().nullable().optional(),
   category: z.string().trim().max(80).optional().default(""),
   ownership_type: equipmentOwnershipEnum.optional().default("proprio_ti"),
   condition_status: equipmentConditionEnum.optional().default("disponivel"),
@@ -171,6 +172,7 @@ export const createEquipmentSchema = z.object({
 export const updateEquipmentSchema = z.object({
   name: z.string().trim().min(1).max(160).optional(),
   patrimony: z.string().trim().max(80).optional(),
+  category_id: z.number().int().positive().nullable().optional(),
   category: z.string().trim().max(80).optional(),
   ownership_type: equipmentOwnershipEnum.optional(),
   condition_status: equipmentConditionEnum.optional(),
@@ -184,16 +186,21 @@ export const updateEquipmentSchema = z.object({
   expected_version: z.number().int().positive().optional()
 });
 
-export const createSectorSchema = z.object({
+const namedCatalogCreateSchema = z.object({
   name: z.string().trim().min(1).max(120),
   is_default: z.boolean().optional().default(false)
 });
 
-export const updateSectorSchema = z.object({
+const namedCatalogUpdateSchema = z.object({
   name: z.string().trim().min(1).max(120).optional(),
   is_default: z.boolean().optional(),
   active: z.boolean().optional()
 });
+
+export const createSectorSchema = namedCatalogCreateSchema;
+export const updateSectorSchema = namedCatalogUpdateSchema;
+export const createCategorySchema = namedCatalogCreateSchema;
+export const updateCategorySchema = namedCatalogUpdateSchema;
 
 export const createLocationSchema = z.object({
   name: z.string().trim().min(1).max(140),
@@ -249,6 +256,11 @@ export const syncOperationSchema = z.discriminatedUnion("type", [
     op_id: z.string().min(1),
     type: z.literal("sector.create"),
     payload: createSectorSchema
+  }),
+  z.object({
+    op_id: z.string().min(1),
+    type: z.literal("category.create"),
+    payload: createCategorySchema
   })
 ]);
 

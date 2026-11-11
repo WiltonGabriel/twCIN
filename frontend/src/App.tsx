@@ -252,11 +252,13 @@ export function App() {
             equipments={syncData.equipments}
             movements={syncData.movements}
             sectors={syncData.sectors}
+            categories={syncData.categories}
             suggestions={syncData.suggestions}
             onCreate={syncData.createEquipment}
             onUpdate={syncData.updateEquipment}
             onReturnToOwner={syncData.returnEquipmentToOwner}
             onCreateSector={syncData.createSector}
+            onCreateCategory={syncData.createCategory}
             onOpenAudit={(item) => setAuditTarget({ entity: "catalog_equipment", entityId: item.id, title: item.name })}
             onPrintReport={(list, title = "Equipamentos sob responsabilidade do TI") =>
               setPdfPayload({
@@ -325,6 +327,7 @@ export function App() {
             equipments={syncData.equipments}
             movements={syncData.movements}
             sectors={syncData.sectors}
+            categories={syncData.categories}
             locations={syncData.locations}
             suggestions={syncData.suggestions}
             online={syncData.online}
@@ -335,6 +338,7 @@ export function App() {
             onRetryFailed={syncData.retryFailed}
             onDiscardFailed={syncData.discardFailed}
             onCreateSector={syncData.createSector}
+            onCreateCategory={syncData.createCategory}
             onRefresh={syncData.syncNow}
             onChangeTheme={setPreference}
             onChangePassword={changePassword}
