@@ -1,7 +1,7 @@
 # twCIN
 
 ![Node.js](https://img.shields.io/badge/Node.js-24%2B-339933?logo=node.js&logoColor=white)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.8%2B-3178C6?logo=typescript&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
 ![SQLite](https://img.shields.io/badge/SQLite-node%3Asqlite-003B57?logo=sqlite&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-GHCR-2496ED?logo=docker&logoColor=white)
@@ -116,12 +116,12 @@ npm run package:linux
 
 ### Publicando um novo Release
 
-1. Atualize a versão e o [CHANGELOG.md](CHANGELOG.md) (ex.: `npm run version:sync -- 1.0.0`).
+1. Atualize a versão e o [CHANGELOG.md](CHANGELOG.md) (ex.: `npm run version:sync -- 1.1.0`).
 2. Envie o commit para `main`, crie e envie a tag:
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag -a v1.1.0 -m "Release v1.1.0"
+git push origin v1.1.0
 ```
 
 O workflow `.github/workflows/release.yml` valida todos os testes, publica a imagem multi-arch no GHCR e anexa os pacotes de **Windows Server (`.zip`)** e **Linux (`.tar.gz`)** com `SHA256SUMS.txt` automaticamente no GitHub Release.
@@ -132,11 +132,12 @@ O workflow `.github/workflows/release.yml` valida todos os testes, publica a ima
 
 ```text
 twCIN/
-├── backend/              # API Fastify, migrations SQLite, auth, backup, sync e testes
-├── frontend/             # React 19 + TypeScript + Tailwind + Vite PWA
+├── .github/              # Workflows (CI, CodeQL, Release), Dependabot e templates de Issue/PR
+├── backend/              # API Fastify, migrations SQLite, auth, CSRF, backup, sync e testes
+├── frontend/             # React 19 + TypeScript + Tailwind + Vite PWA e testes de UI/offline
 ├── deploy/               # Scripts de execução e serviço (Windows Server, Linux, Caddy)
 ├── docs/                 # Referência da API e Guia de Implantação
-├── scripts/              # Dev runner, versionamento, empacotador e teste E2E
+├── scripts/              # Dev runner, versionamento, empacotador e teste E2E (Chrome + axe-core)
 ├── Dockerfile            # Imagem Docker multi-stage não-root com healthcheck
 ├── docker-compose.yml    # Stack pronta com volume persistente e HTTPS opcional
 └── CHANGELOG.md          # Histórico de versões e notas de release

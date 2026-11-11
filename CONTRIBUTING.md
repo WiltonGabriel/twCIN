@@ -28,12 +28,12 @@ Antes de abrir um pull request, garanta que a checagem de tipos, os testes autom
 npm run typecheck
 npm test
 npm run build
-npm run test:e2e   # requer Chrome/Chromium/Edge instalado
+npm run test:e2e   # requer Chrome/Chromium/Edge instalado (inclui auditoria axe-core WCAG 2.1 AA)
 ```
 
 ## Diretrizes
 
 - Mantenha toda a interface e documentação objetivas, diretas e consistentes em português (pt-BR).
 - Nunca faça commit de arquivos `.env`, bancos `.db`, segredos ou logotipos/dados específicos de uma instituição privada.
-- Adicione ou atualize testes automatizados em `backend/tests/` para qualquer alteração na API ou no banco de dados.
-- Valide todos os novos payloads com schemas Zod e preserve o registro de auditoria em `audit_logs`.
+- Adicione ou atualize testes automatizados em `backend/tests/` (API/banco/CSRF) e `frontend/tests/` (componentes React e motor offline) conforme o escopo da mudança.
+- Valide todos os novos payloads com schemas Zod, mantenha proteção CSRF em mutações autenticadas e preserve o registro de auditoria em `audit_logs`.
