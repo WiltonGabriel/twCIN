@@ -1,11 +1,13 @@
 import { KeyRound, Pencil, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { OnlineOnlyNotice } from "../components/OnlineOnlyNotice";
 import { apiRequest } from "../services/api";
-import type { AuthUser, TiUser } from "../types";
+import type { AuthUser, TiUser, UserRole } from "../types";
 
 interface UsuariosPageProps {
   users: TiUser[];
   currentUser: AuthUser;
+  online: boolean;
   onRefresh: () => Promise<void>;
 }
 
@@ -16,10 +18,11 @@ function formatDateTime(iso: string | null): string {
   return d.toLocaleString("pt-BR");
 }
 
-export function UsuariosPage({ users, currentUser, onRefresh }: UsuariosPageProps) {
+export function UsuariosPage({ users, currentUser, online, onRefresh }: UsuariosPageProps) {
   const [fullName, setFullName] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [role, setRole] = useState<UserRole>("tecnico");
   const [mustChangeOnFirst, setMustChangeOnFirst] = useState(true);
 
   const [search, setSearch] = useState("");
@@ -29,7 +32,7 @@ export function UsuariosPage({ users, currentUser, onRefresh }: UsuariosPageProp
   const [saving, setSaving] = useState(false);
 
   const [editing, setEditing] = useState<
-    (TiUser & { newPassword: string; mustChange: boolean }) | null
+    (TiUser & { newPassword: string; mustChange: boolean; nextRole: UserRole }) | null
   >(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
 
@@ -71,12 +74,14 @@ export function UsuariosPage({ users, currentUser, onRefresh }: UsuariosPageProp
           full_name: fullName,
           username,
           password,
+          role,
           must_change_password: mustChangeOnFirst
         })
       });
       setFullName("");
       setUsername("");
       setPassword("");
+      setRole("tecnico");
       setMustChangeOnFirst(true);
       await onRefresh();
     } catch (err) {
@@ -127,6 +132,7 @@ export function UsuariosPage({ users, currentUser, onRefresh }: UsuariosPageProp
         body: JSON.stringify({
           full_name: editing.full_name,
           username: editing.username,
+          role: editing.nextRole,
           must_change_password: editing.mustChange,
           ...(editing.newPassword ? { password: editing.newPassword } : {})
         })
@@ -142,6 +148,7 @@ export function UsuariosPage({ users, currentUser, onRefresh }: UsuariosPageProp
 
   return (
     <div className="space-y-5">
+      {!online && <OnlineOnlyNotice text="Você está offline. Cadastrar ou alterar usuários exige conexão." />}
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
         <section
@@ -197,6 +204,15 @@ export function UsuariosPage({ users, currentUser, onRefresh }: UsuariosPageProp
               className="tw-input"
             />
           </div>
+          <div>
+            <label htmlFor="u-role" className="block text-xs font-medium mb-1">
+              Perfil
+            </label>
+            <select id="u-role" value={role} onChange={(e) => setRole(e.target.value as UserRole)} className="tw-input">
+              <option value="tecnico">Técnico (operações do dia a dia)</option>
+              <option value="admin">Administrador (equipe, regras e backup)</option>
+            </select>
+          </div>
 
           <label className="flex items-center gap-2 text-xs cursor-pointer pt-1">
             <input
@@ -237,7 +253,7 @@ export function UsuariosPage({ users, currentUser, onRefresh }: UsuariosPageProp
 
           <button
             type="submit"
-            disabled={saving}
+            disabled={!online || saving}
             className="w-full min-h-[44px] rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-60"
             style={{ backgroundColor: "var(--brand)", color: "var(--brand-fg)" }}
           >
@@ -290,6 +306,16 @@ export function UsuariosPage({ users, currentUser, onRefresh }: UsuariosPageProp
                   <span
                     className="px-2 py-0.5 rounded text-xs font-medium"
                     style={
+                      u.role === "tecnico"
+                        ? { backgroundColor: "var(--surface-alt)", color: "var(--text-muted)" }
+                        : { backgroundColor: "var(--brand-soft)", color: "var(--brand)" }
+                    }
+                  >
+                    {u.role === "tecnico" ? "Técnico" : "Admin"}
+                  </span>
+                  <span
+                    className="px-2 py-0.5 rounded text-xs font-medium"
+                    style={
                       u.active === 1
                         ? { backgroundColor: "var(--ok-soft)", color: "var(--ok)" }
                         : { backgroundColor: "var(--cin-red-soft)", color: "var(--cin-red)" }
@@ -314,14 +340,16 @@ export function UsuariosPage({ users, currentUser, onRefresh }: UsuariosPageProp
               <div className="flex flex-wrap items-center gap-1.5 shrink-0">
                 <button
                   type="button"
+                  disabled={!online}
                   onClick={() =>
                     setEditing({
                       ...u,
                       newPassword: "",
-                      mustChange: u.must_change_password === 1
+                      mustChange: u.must_change_password === 1,
+                      nextRole: u.role === "tecnico" ? "tecnico" : "admin"
                     })
                   }
-                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs border cursor-pointer"
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs border cursor-pointer disabled:opacity-50"
                   style={{ borderColor: "var(--border)" }}
                 >
                   <Pencil className="w-3.5 h-3.5" aria-hidden="true" />
@@ -329,9 +357,10 @@ export function UsuariosPage({ users, currentUser, onRefresh }: UsuariosPageProp
                 </button>
                 <button
                   type="button"
+                  disabled={!online}
                   onClick={() => void handleRevokeSessions(u)}
                   title="Encerra sessões ativas em outros dispositivos"
-                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs border cursor-pointer"
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs border cursor-pointer disabled:opacity-50"
                   style={{ borderColor: "var(--border)" }}
                 >
                   <KeyRound className="w-3.5 h-3.5" aria-hidden="true" />
@@ -340,8 +369,9 @@ export function UsuariosPage({ users, currentUser, onRefresh }: UsuariosPageProp
                 {u.id !== currentUser.id && (
                   <button
                     type="button"
+                    disabled={!online}
                     onClick={() => void handleToggleActive(u)}
-                    className="px-2.5 py-1.5 rounded-lg text-xs border cursor-pointer"
+                    className="px-2.5 py-1.5 rounded-lg text-xs border cursor-pointer disabled:opacity-50"
                     style={{ borderColor: "var(--border)" }}
                   >
                     {u.active === 1 ? "Desativar" : "Ativar"}
@@ -369,6 +399,19 @@ export function UsuariosPage({ users, currentUser, onRefresh }: UsuariosPageProp
             <div>
               <label className="block text-xs font-medium mb-1">Usuário (login)</label>
               <input required value={editing.username} onChange={(e) => setEditing({ ...editing, username: e.target.value })} className="tw-input" />
+            </div>
+            <div>
+              <label htmlFor="edit-u-role" className="block text-xs font-medium mb-1">Perfil</label>
+              <select
+                id="edit-u-role"
+                value={editing.nextRole}
+                disabled={editing.id === currentUser.id}
+                onChange={(e) => setEditing({ ...editing, nextRole: e.target.value as UserRole })}
+                className="tw-input"
+              >
+                <option value="tecnico">Técnico</option>
+                <option value="admin">Administrador</option>
+              </select>
             </div>
             <div>
               <label className="block text-xs font-medium mb-1">Nova senha (opcional)</label>

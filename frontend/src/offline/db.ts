@@ -4,6 +4,7 @@ import type {
   CatalogEquipment,
   CatalogLocation,
   CatalogSector,
+  EquipmentCondition,
   MovementItem,
   PublicSettings,
   SuggestionsPayload,
@@ -111,7 +112,17 @@ export async function getCachedSettings(): Promise<PublicSettings> {
     (row?.value as PublicSettings | undefined) ?? {
       app_name: "twCIN",
       org_name: "Setor de TI",
-      logo_data_url: ""
+      org_subtitle: "",
+      org_document: "",
+      org_contact: "",
+      loan_term_footer: "",
+      logo_data_url: "",
+      theme_preset: "cin",
+      brand_color: "#002d6b",
+      accent_color: "#c81018",
+      bg_color: "",
+      bg_image_data_url: "",
+      bg_overlay_opacity: 85
     }
   );
 }
@@ -166,4 +177,52 @@ export async function clearLocalDataForLogout(userId: number): Promise<void> {
       await offlineDb.failedOps.bulkDelete(ownFailed.map((f) => f.id!).filter((id) => id !== undefined));
     }
   );
+}
+
+/** Remove todos os dados em cache local (ex.: após restauração de backup). */
+export async function clearAllLocalData(): Promise<void> {
+  await offlineDb.transaction(
+    "rw",
+    [
+      offlineDb.movements,
+      offlineDb.equipments,
+      offlineDb.sectors,
+      offlineDb.locations,
+      offlineDb.users,
+      offlineDb.syncQueue,
+      offlineDb.failedOps,
+      offlineDb.meta
+    ],
+    async () => {
+      await Promise.all([
+        offlineDb.movements.clear(),
+        offlineDb.equipments.clear(),
+        offlineDb.sectors.clear(),
+        offlineDb.locations.clear(),
+        offlineDb.users.clear(),
+        offlineDb.syncQueue.clear(),
+        offlineDb.failedOps.clear(),
+        offlineDb.meta.delete("suggestions"),
+        offlineDb.meta.delete("lastSyncAt")
+      ]);
+    }
+  );
+}
+
+/** Atualiza otimisticamente a situação do equipamento no cache local após saída/devolução offline. */
+export async function applyLocalEquipmentCondition(
+  equipmentId: number | null | undefined,
+  nextCondition: EquipmentCondition,
+  bumpVersion: boolean
+): Promise<void> {
+  if (!equipmentId) return;
+  const eq = await offlineDb.equipments.where("id").equals(equipmentId).first();
+  if (!eq || eq.condition_status === nextCondition) return;
+  await offlineDb.equipments.put({
+    ...eq,
+    condition_status: nextCondition,
+    version: bumpVersion && eq.id > 0 ? eq.version + 1 : eq.version,
+    updated_at: new Date().toISOString(),
+    _pendingSync: true
+  });
 }

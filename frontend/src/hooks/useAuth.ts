@@ -16,7 +16,17 @@ export function useAuth() {
   const [settings, setSettings] = useState<PublicSettings>({
     app_name: "twCIN",
     org_name: "Setor de TI",
-    logo_data_url: ""
+    org_subtitle: "",
+    org_document: "",
+    org_contact: "",
+    loan_term_footer: "",
+    logo_data_url: "",
+    theme_preset: "cin",
+    brand_color: "#002d6b",
+    accent_color: "#c81018",
+    bg_color: "",
+    bg_image_data_url: "",
+    bg_overlay_opacity: 85
   });
   const [loading, setLoading] = useState(true);
 
@@ -142,6 +152,7 @@ export function useAuth() {
     changePassword,
     logout,
     setUser,
-    refreshSettings: loadPublicSettings
+    refreshSettings: loadPublicSettings,
+    refreshSession: checkSession
   };
 }

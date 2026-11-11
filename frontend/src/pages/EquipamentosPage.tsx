@@ -1,8 +1,16 @@
-import { Eye, History, Pencil, Plus, Printer, Undo2, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Eye, FileText, History, Pencil, Plus, Printer, Undo2, X } from "lucide-react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { PageIntro } from "../components/PageIntro";
+import { findCatalogSector, SectorSelector } from "../components/SectorSelector";
 import { apiRequest } from "../services/api";
-import type { CatalogEquipment, EquipmentCondition, EquipmentOwnership, MovementItem } from "../types";
+import type {
+  CatalogEquipment,
+  CatalogSector,
+  EquipmentCondition,
+  EquipmentOwnership,
+  MovementItem,
+  SuggestionsPayload
+} from "../types";
 import {
   CONDITION_LABELS,
   conditionStyle,
@@ -14,42 +22,93 @@ import {
   movementStatusStyle,
   OWNERSHIP_LABELS
 } from "../types/labels";
+import { isoToLocalDate, isoToLocalTime, localDate, localTime, toIso } from "../utils/dateInput";
+import { collectSectorFilterOptions, matchEquipmentSector } from "../utils/sectorFilters";
 
-type EquipmentFields = {
+type EquipmentPayload = {
   name: string;
   patrimony: string;
   category: string;
   ownership_type: EquipmentOwnership;
   condition_status: EquipmentCondition;
+  origin_sector_id: number | null;
   origin: string;
   received_from: string;
+  received_at?: string;
   reason: string;
   notes: string;
+};
+
+type EquipmentFormState = EquipmentPayload & {
+  autoNow: boolean;
+  receivedDate: string;
+  receivedTime: string;
 };
 
 interface EquipamentosPageProps {
   equipments: CatalogEquipment[];
   movements: MovementItem[];
-  onCreate: (payload: EquipmentFields) => Promise<void>;
-  onUpdate: (item: CatalogEquipment, patch: Partial<EquipmentFields & { active: boolean }>) => Promise<void>;
-  onReturnToOwner: (item: CatalogEquipment, input: { received_by: string; notes?: string }) => Promise<void>;
+  sectors: CatalogSector[];
+  suggestions: SuggestionsPayload;
+  onCreate: (payload: EquipmentPayload) => Promise<void>;
+  onUpdate: (item: CatalogEquipment, patch: Partial<EquipmentPayload & { active: boolean }>) => Promise<void>;
+  onReturnToOwner: (
+    item: CatalogEquipment,
+    input: { received_by: string; returned_at?: string; notes?: string }
+  ) => Promise<void>;
+  onCreateSector: (payload: { name: string; is_default?: boolean }) => Promise<CatalogSector>;
   onOpenAudit: (item: CatalogEquipment) => void;
-  onPrintReport: (items: CatalogEquipment[]) => void;
+  onPrintReport: (items: CatalogEquipment[], title?: string) => void;
+  onPrintReceipt: (item: CatalogEquipment) => void;
 }
 
-type Filter = "all" | "disponiveis" | "fora" | "atencao" | EquipmentOwnership | "inactive";
+type Filter =
+  | "all"
+  | "disponiveis"
+  | "fora"
+  | "atencao"
+  | EquipmentOwnership
+  | "devolvidos_dono"
+  | "inactive";
 
-const EMPTY_FIELDS: EquipmentFields = {
-  name: "",
-  patrimony: "",
-  category: "",
-  ownership_type: "proprio_ti",
-  condition_status: "disponivel",
-  origin: "",
-  received_from: "",
-  reason: "",
-  notes: ""
-};
+function emptyEquipmentForm(): EquipmentFormState {
+  const now = new Date();
+  return {
+    name: "",
+    patrimony: "",
+    category: "",
+    ownership_type: "proprio_ti",
+    condition_status: "disponivel",
+    origin_sector_id: null,
+    origin: "",
+    received_from: "",
+    reason: "",
+    notes: "",
+    autoNow: true,
+    receivedDate: localDate(now),
+    receivedTime: localTime(now)
+  };
+}
+
+function formFromEquipment(eq: CatalogEquipment): EquipmentFormState {
+  const rec = eq.received_at || eq.created_at;
+  return {
+    name: eq.name,
+    patrimony: eq.patrimony || "",
+    category: eq.category,
+    ownership_type: eq.ownership_type,
+    condition_status: eq.condition_status,
+    origin_sector_id: eq.origin_sector_id ?? null,
+    origin: eq.origin,
+    received_from: eq.received_from,
+    received_at: rec,
+    reason: eq.reason,
+    notes: eq.notes,
+    autoNow: false,
+    receivedDate: isoToLocalDate(rec),
+    receivedTime: isoToLocalTime(rec)
+  };
+}
 
 function useDialog(open: boolean, onClose: () => void) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -73,18 +132,114 @@ function EquipmentFormFields({
   idPrefix,
   value,
   onChange,
+  sectors,
+  suggestions,
+  onCreateSector,
+  allowAutoNow,
   lockedCondition
 }: {
   idPrefix: string;
-  value: EquipmentFields;
-  onChange: (v: EquipmentFields) => void;
+  value: EquipmentFormState;
+  onChange: (v: EquipmentFormState) => void;
+  sectors: CatalogSector[];
+  suggestions: SuggestionsPayload;
+  onCreateSector: (payload: { name: string; is_default?: boolean }) => Promise<CatalogSector>;
+  allowAutoNow: boolean;
   /** Motivo pelo qual a situação não pode ser alterada agora (ex.: está emprestado). */
   lockedCondition?: string;
 }) {
-  const set = <K extends keyof EquipmentFields>(key: K, v: EquipmentFields[K]) => onChange({ ...value, [key]: v });
+  const peopleListId = useId();
+  const set = <K extends keyof EquipmentFormState>(key: K, v: EquipmentFormState[K]) =>
+    onChange({ ...value, [key]: v });
   const conditionOptions = MANUAL_CONDITIONS.includes(value.condition_status)
     ? MANUAL_CONDITIONS
     : [value.condition_status, ...MANUAL_CONDITIONS];
+
+  const handleOriginChange = (name: string) => {
+    const matched = findCatalogSector(sectors, name);
+    onChange({
+      ...value,
+      origin: name,
+      origin_sector_id: matched && matched.id > 0 ? matched.id : null
+    });
+  };
+
+  const originContent = (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div>
+        <label htmlFor={`${idPrefix}-origin`} className="tw-label">
+          {value.ownership_type === "terceiro" ? "Setor / origem *" : "Setor doador / origem (opcional)"}
+        </label>
+        <SectorSelector
+          id={`${idPrefix}-origin`}
+          value={value.origin}
+          onChange={handleOriginChange}
+          sectors={sectors}
+          suggestedNames={suggestions.sectors.map((s) => s.name)}
+          onCreateSector={async (secPayload) => {
+            const created = await onCreateSector(secPayload);
+            onChange({
+              ...value,
+              origin: created.name,
+              origin_sector_id: created.id > 0 ? created.id : null
+            });
+            return created;
+          }}
+        />
+      </div>
+      <div>
+        <label htmlFor={`${idPrefix}-from`} className="tw-label">Entregue por (pessoa)</label>
+        <input
+          id={`${idPrefix}-from`}
+          list={peopleListId}
+          value={value.received_from}
+          onChange={(e) => set("received_from", e.target.value)}
+          placeholder="Quem entregou na TI"
+          className="tw-input"
+        />
+        <datalist id={peopleListId}>
+          {suggestions.people.map((person) => (
+            <option key={person} value={person} />
+          ))}
+        </datalist>
+      </div>
+      <div className="sm:col-span-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+          <span className="tw-label mb-0">Data/hora do recebimento na TI</span>
+          {allowAutoNow && (
+            <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer">
+              <input
+                type="checkbox"
+                checked={value.autoNow}
+                onChange={(e) => set("autoNow", e.target.checked)}
+              />
+              <span>Agora (horário do envio)</span>
+            </label>
+          )}
+        </div>
+        {!value.autoNow && (
+          <div className="grid grid-cols-2 gap-2">
+            <input
+              type="date"
+              aria-label="Data de recebimento na TI"
+              value={value.receivedDate}
+              onChange={(e) => set("receivedDate", e.target.value)}
+              className="tw-input"
+              required
+            />
+            <input
+              type="time"
+              aria-label="Hora de recebimento na TI"
+              value={value.receivedTime}
+              onChange={(e) => set("receivedTime", e.target.value)}
+              className="tw-input"
+              required
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -120,24 +275,31 @@ function EquipmentFormFields({
           ))}
         </select>
         <p className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>
-          {lockedCondition ?? "\"Emprestado\" e \"Em uso\" por instalação são definidos pelas movimentações."}
+          {lockedCondition ?? "\"Emprestado\" é definido somente pelas movimentações; \"Em uso\" pode ser marcado manualmente ou por instalação fixa."}
         </p>
       </div>
-      {value.ownership_type === "terceiro" && (
-        <>
-          <div>
-            <label htmlFor={`${idPrefix}-from`} className="tw-label">Recebido de</label>
-            <input id={`${idPrefix}-from`} value={value.received_from} onChange={(e) => set("received_from", e.target.value)} placeholder="Pessoa ou setor dono" className="tw-input" />
-          </div>
-          <div>
-            <label htmlFor={`${idPrefix}-origin`} className="tw-label">Origem</label>
-            <input id={`${idPrefix}-origin`} value={value.origin} onChange={(e) => set("origin", e.target.value)} placeholder="Setor, sala ou fornecedor" className="tw-input" />
-          </div>
-        </>
+
+      {value.ownership_type === "terceiro" ? (
+        <fieldset className="sm:col-span-2 p-3 rounded-xl border space-y-2" style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}>
+          <legend className="text-xs font-semibold px-1">Origem e recebimento na TI</legend>
+          {originContent}
+        </fieldset>
+      ) : (
+        <details
+          className="sm:col-span-2 p-3 rounded-xl border"
+          style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}
+          open={Boolean(value.origin || value.received_from)}
+        >
+          <summary className="text-xs font-semibold cursor-pointer">
+            Procedência / recebimento na TI (opcional — doação ou repasse de setor)
+          </summary>
+          <div className="mt-3">{originContent}</div>
+        </details>
       )}
+
       <div className="sm:col-span-2">
         <label htmlFor={`${idPrefix}-reason`} className="tw-label">Motivo de estar com o TI</label>
-        <input id={`${idPrefix}-reason`} value={value.reason} onChange={(e) => set("reason", e.target.value)} placeholder="Reserva técnica, formatação, conserto..." className="tw-input" />
+        <input id={`${idPrefix}-reason`} value={value.reason} onChange={(e) => set("reason", e.target.value)} placeholder="Reserva técnica, doação de setor, formatação, conserto..." className="tw-input" />
       </div>
       <div className="sm:col-span-2">
         <label htmlFor={`${idPrefix}-notes`} className="tw-label">Observações</label>
@@ -150,19 +312,31 @@ function EquipmentFormFields({
 export function EquipamentosPage({
   equipments,
   movements,
+  sectors,
+  suggestions,
   onCreate,
   onUpdate,
   onReturnToOwner,
+  onCreateSector,
   onOpenAudit,
-  onPrintReport
+  onPrintReport,
+  onPrintReceipt
 }: EquipamentosPageProps) {
   const [filter, setFilter] = useState<Filter>("all");
+  const [sectorFilter, setSectorFilter] = useState("all");
   const [search, setSearch] = useState("");
-  const [creating, setCreating] = useState<EquipmentFields | null>(null);
-  const [editing, setEditing] = useState<{ item: CatalogEquipment; fields: EquipmentFields; active: boolean } | null>(null);
+  const [creating, setCreating] = useState<EquipmentFormState | null>(null);
+  const [editing, setEditing] = useState<{ item: CatalogEquipment; fields: EquipmentFormState; active: boolean } | null>(null);
   const [details, setDetails] = useState<CatalogEquipment | null>(null);
   const [detailMovements, setDetailMovements] = useState<MovementItem[]>([]);
-  const [returning, setReturning] = useState<{ item: CatalogEquipment; receivedBy: string; notes: string } | null>(null);
+  const [returning, setReturning] = useState<{
+    item: CatalogEquipment;
+    receivedBy: string;
+    autoNow: boolean;
+    returnedDate: string;
+    returnedTime: string;
+    notes: string;
+  } | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -180,6 +354,15 @@ export function EquipamentosPage({
     return map;
   }, [movements]);
 
+  const sectorOptions = useMemo(
+    () => collectSectorFilterOptions(sectors, equipments, movements),
+    [sectors, equipments, movements]
+  );
+  const selectedSectorOption = useMemo(
+    () => sectorOptions.find((s) => s.name === sectorFilter) ?? null,
+    [sectorOptions, sectorFilter]
+  );
+
   const active = equipments.filter((e) => e.active === 1);
   const counts = {
     all: active.length,
@@ -187,13 +370,15 @@ export function EquipamentosPage({
     fora: active.filter((e) => openByEquipment.has(e.id)).length,
     atencao: active.filter((e) => e.condition_status === "manutencao" || e.condition_status === "avaliacao").length,
     terceiro: active.filter((e) => e.ownership_type === "terceiro").length,
-    inactive: equipments.length - active.length
+    devolvidos_dono: equipments.filter((e) => e.condition_status === "devolvido_dono").length,
+    inactive: equipments.filter((e) => e.active === 0 && e.condition_status !== "devolvido_dono").length
   };
 
   const q = search.trim().toLowerCase();
   const filtered = equipments
     .filter((eq) => {
-      if (filter === "inactive") return eq.active === 0;
+      if (filter === "devolvidos_dono") return eq.condition_status === "devolvido_dono";
+      if (filter === "inactive") return eq.active === 0 && eq.condition_status !== "devolvido_dono";
       if (eq.active !== 1) return false;
       if (filter === "disponiveis") return eq.condition_status === "disponivel";
       if (filter === "fora") return openByEquipment.has(eq.id);
@@ -201,10 +386,23 @@ export function EquipamentosPage({
       if (filter === "proprio_ti" || filter === "estoque" || filter === "terceiro") return eq.ownership_type === filter;
       return true;
     })
+    .filter((eq) => (!selectedSectorOption ? true : matchEquipmentSector(eq, selectedSectorOption)))
     .filter(
       (eq) =>
         !q ||
-        [eq.name, eq.patrimony || "", eq.category, eq.origin, eq.received_from, eq.reason].join(" ").toLowerCase().includes(q)
+        [
+          eq.name,
+          eq.patrimony || "",
+          eq.category,
+          eq.origin,
+          eq.received_from,
+          eq.owner_received_by || "",
+          eq.reason,
+          eq.notes
+        ]
+          .join(" ")
+          .toLowerCase()
+          .includes(q)
     )
     .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
 
@@ -226,6 +424,7 @@ export function EquipamentosPage({
     if (eq.id > 0 && navigator.onLine) {
       try {
         const res = await apiRequest<{ item: CatalogEquipment; movements: MovementItem[] }>(`/api/catalogs/equipments/${eq.id}`);
+        setDetails(res.item);
         setDetailMovements(res.movements);
       } catch {
         // Mantém o histórico local quando offline.
@@ -238,25 +437,35 @@ export function EquipamentosPage({
     setEditing({
       item: eq,
       active: eq.active === 1,
-      fields: {
-        name: eq.name,
-        patrimony: eq.patrimony || "",
-        category: eq.category,
-        ownership_type: eq.ownership_type,
-        condition_status: eq.condition_status,
-        origin: eq.origin,
-        received_from: eq.received_from,
-        reason: eq.reason,
-        notes: eq.notes
-      }
+      fields: formFromEquipment(eq)
     });
   };
 
   const submitCreate = (e: FormEvent) => {
     e.preventDefault();
     if (!creating) return;
+    const payload: EquipmentPayload = {
+      name: creating.name,
+      patrimony: creating.patrimony,
+      category: creating.category,
+      ownership_type: creating.ownership_type,
+      condition_status: creating.condition_status,
+      origin_sector_id: creating.origin_sector_id,
+      origin: creating.origin,
+      received_from: creating.received_from,
+      reason: creating.reason,
+      notes: creating.notes
+    };
+    if (!creating.autoNow) {
+      const iso = toIso(creating.receivedDate, creating.receivedTime);
+      if (!iso) {
+        setError("Data ou hora de recebimento inválida.");
+        return;
+      }
+      payload.received_at = iso;
+    }
     void run(async () => {
-      await onCreate(creating);
+      await onCreate(payload);
       setCreating(null);
     }, "Erro ao cadastrar equipamento.");
   };
@@ -265,13 +474,28 @@ export function EquipamentosPage({
     e.preventDefault();
     if (!editing) return;
     const { item, fields } = editing;
-    // Envia só o que mudou: evita conflitos com a situação controlada pelas movimentações.
-    const patch: Partial<EquipmentFields & { active: boolean }> = {};
-    (Object.keys(fields) as Array<keyof EquipmentFields>).forEach((key) => {
-      const original = key === "patrimony" ? item.patrimony || "" : item[key];
-      if (fields[key] !== original) (patch as Record<string, unknown>)[key] = fields[key];
-    });
+    const patch: Partial<EquipmentPayload & { active: boolean }> = {};
+    if (fields.name !== item.name) patch.name = fields.name;
+    if (fields.patrimony !== (item.patrimony || "")) patch.patrimony = fields.patrimony;
+    if (fields.category !== item.category) patch.category = fields.category;
+    if (fields.ownership_type !== item.ownership_type) patch.ownership_type = fields.ownership_type;
+    if (fields.condition_status !== item.condition_status) patch.condition_status = fields.condition_status;
+    if (fields.origin_sector_id !== (item.origin_sector_id ?? null)) patch.origin_sector_id = fields.origin_sector_id;
+    if (fields.origin !== item.origin) patch.origin = fields.origin;
+    if (fields.received_from !== item.received_from) patch.received_from = fields.received_from;
+    if (fields.reason !== item.reason) patch.reason = fields.reason;
+    if (fields.notes !== item.notes) patch.notes = fields.notes;
+
+    const nextReceivedAt = toIso(fields.receivedDate, fields.receivedTime);
+    if (!nextReceivedAt) {
+      setError("Data ou hora de recebimento inválida.");
+      return;
+    }
+    if (nextReceivedAt !== (item.received_at || item.created_at)) {
+      patch.received_at = nextReceivedAt;
+    }
     if (editing.active !== (item.active === 1)) patch.active = editing.active;
+
     void run(async () => {
       if (Object.keys(patch).length > 0) await onUpdate(item, patch);
       setEditing(null);
@@ -281,8 +505,21 @@ export function EquipamentosPage({
   const submitReturnToOwner = (e: FormEvent) => {
     e.preventDefault();
     if (!returning) return;
+    let returnedAt: string | undefined;
+    if (!returning.autoNow) {
+      const iso = toIso(returning.returnedDate, returning.returnedTime);
+      if (!iso) {
+        setError("Data ou hora de devolução inválida.");
+        return;
+      }
+      returnedAt = iso;
+    }
     void run(async () => {
-      await onReturnToOwner(returning.item, { received_by: returning.receivedBy, notes: returning.notes || undefined });
+      await onReturnToOwner(returning.item, {
+        received_by: returning.receivedBy,
+        returned_at: returnedAt,
+        notes: returning.notes || undefined
+      });
       setReturning(null);
     }, "Erro ao registrar a devolução ao dono.");
   };
@@ -315,7 +552,15 @@ export function EquipamentosPage({
       );
     }
     if (eq.condition_status === "devolvido_dono") {
-      return <span style={{ color: "var(--text-muted)" }}>Com o dono desde {formatDate(eq.owner_returned_at)}</span>;
+      return (
+        <span>
+          Devolvido ao dono
+          <span className="block text-xs" style={{ color: "var(--text-muted)" }}>
+            {formatDateTime(eq.owner_returned_at)}
+            {eq.owner_received_by ? ` · para ${eq.owner_received_by}` : ""}
+          </span>
+        </span>
+      );
     }
     return <span style={{ color: "var(--text-muted)" }}>Com o TI</span>;
   };
@@ -330,18 +575,29 @@ export function EquipamentosPage({
     <div className="space-y-5">
       <PageIntro
         title="Equipamentos"
-        purpose="Acervo sob responsabilidade do TI: itens próprios, estoque e equipamentos recebidos de outros setores, com a situação e onde cada um está."
+        purpose="Acervo sob responsabilidade do TI: itens próprios, estoque e equipamentos recebidos de outros setores para conserto ou incorporação."
         howTo={[
-          "Use \"Novo equipamento\" para cadastrar. A situação Emprestado é atualizada sozinha pelas movimentações.",
-          "Filtre por disponíveis, fora, manutenção ou terceiros, ou busque por nome e patrimônio.",
-          "Em Detalhes você vê o histórico. Equipamentos de terceiros podem ser devolvidos ao dono."
+          "Use \"Novo equipamento\" para cadastrar. Vincule o setor de origem e a data de recebimento para comprovações futuras.",
+          "Filtre por setor de origem, situação ou \"Devolvidos ao dono\".",
+          "Para itens de terceiros, emita o Comprovante PDF de entrada ou entrega de volta ao setor."
         ]}
         actions={
           <>
-            <button type="button" className="tw-btn" onClick={() => onPrintReport(filtered)}>
+            <button
+              type="button"
+              className="tw-btn"
+              onClick={() =>
+                onPrintReport(
+                  filtered,
+                  selectedSectorOption
+                    ? `Equipamentos — ${selectedSectorOption.name}`
+                    : "Equipamentos sob responsabilidade do TI"
+                )
+              }
+            >
               <Printer className="w-4 h-4" aria-hidden="true" /> PDF
             </button>
-            <button type="button" className="tw-btn tw-btn-primary" onClick={() => { setError(null); setCreating({ ...EMPTY_FIELDS }); }}>
+            <button type="button" className="tw-btn tw-btn-primary" onClick={() => { setError(null); setCreating(emptyEquipmentForm()); }}>
               <Plus className="w-4 h-4" aria-hidden="true" /> Novo equipamento
             </button>
           </>
@@ -349,17 +605,39 @@ export function EquipamentosPage({
       />
 
       <section className="tw-card p-4 sm:p-5 space-y-4">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+        <search className="space-y-3 block">
           <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filtrar equipamentos">
             {filterChip("all", "Todos", counts.all)}
             {filterChip("disponiveis", "Disponíveis", counts.disponiveis)}
             {filterChip("fora", "Fora do TI", counts.fora)}
             {filterChip("atencao", "Manutenção / avaliação", counts.atencao)}
             {filterChip("terceiro", "De terceiros", counts.terceiro)}
+            {filterChip("devolvidos_dono", "Devolvidos ao dono", counts.devolvidos_dono)}
             {filterChip("inactive", "Inativos", counts.inactive)}
           </div>
-          <input type="search" aria-label="Buscar equipamentos" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar nome, patrimônio, categoria..." className="tw-input lg:w-72" />
-        </div>
+
+          <div className="flex flex-col sm:flex-row gap-2 sm:items-center justify-between">
+            <select
+              aria-label="Filtrar por setor de origem"
+              value={sectorFilter}
+              onChange={(e) => setSectorFilter(e.target.value)}
+              className="tw-input sm:w-64"
+            >
+              <option value="all">Todos os setores de origem</option>
+              {sectorOptions.map((s) => (
+                <option key={s.name} value={s.name}>{s.name}</option>
+              ))}
+            </select>
+            <input
+              type="search"
+              aria-label="Buscar equipamentos"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar nome, patrimônio, setor, pessoa..."
+              className="tw-input sm:w-80"
+            />
+          </div>
+        </search>
 
         {filtered.length === 0 ? (
           <p className="text-sm py-6 text-center" style={{ color: "var(--text-muted)" }}>
@@ -372,7 +650,7 @@ export function EquipamentosPage({
                 <tr>
                   <th scope="col">Equipamento</th>
                   <th scope="col">Patrimônio</th>
-                  <th scope="col">Posse</th>
+                  <th scope="col">Posse / Origem</th>
                   <th scope="col">Situação</th>
                   <th scope="col">Onde está</th>
                   <th scope="col"><span className="sr-only">Ações</span></th>
@@ -389,10 +667,18 @@ export function EquipamentosPage({
                       </div>
                     </td>
                     <td data-label="Patrimônio" className="font-mono text-xs">{eq.patrimony || "-"}</td>
-                    <td data-label="Posse">
-                      {OWNERSHIP_LABELS[eq.ownership_type]}
-                      {eq.ownership_type === "terceiro" && eq.received_from && (
-                        <div className="text-xs" style={{ color: "var(--text-muted)" }}>Recebido de {eq.received_from}</div>
+                    <td data-label="Posse / Origem">
+                      <div>{OWNERSHIP_LABELS[eq.ownership_type]}</div>
+                      {(eq.origin || eq.received_from) && (
+                        <div className="text-xs" style={{ color: "var(--text-muted)" }}>
+                          {eq.origin || "Origem não informada"}
+                          {eq.received_from ? ` · ${eq.received_from}` : ""}
+                        </div>
+                      )}
+                      {(eq.ownership_type === "terceiro" || eq.origin) && (
+                        <div className="text-xs" style={{ color: "var(--text-muted)" }}>
+                          Recebido em {formatDate(eq.received_at || eq.created_at)}
+                        </div>
                       )}
                     </td>
                     <td data-label="Situação">
@@ -404,6 +690,11 @@ export function EquipamentosPage({
                         <button type="button" className="tw-btn tw-btn-sm" onClick={() => void openDetails(eq)}>
                           <Eye className="w-3.5 h-3.5" aria-hidden="true" /> Detalhes
                         </button>
+                        {(eq.ownership_type === "terceiro" || eq.condition_status === "devolvido_dono") && (
+                          <button type="button" className="tw-btn tw-btn-sm" onClick={() => onPrintReceipt(eq)}>
+                            <FileText className="w-3.5 h-3.5" aria-hidden="true" /> Comprovante
+                          </button>
+                        )}
                         {eq.condition_status !== "devolvido_dono" && (
                           <button type="button" className="tw-btn tw-btn-sm" onClick={() => openEdit(eq)}>
                             <Pencil className="w-3.5 h-3.5" aria-hidden="true" /> Editar
@@ -420,7 +711,18 @@ export function EquipamentosPage({
                             className="tw-btn tw-btn-sm"
                             disabled={openByEquipment.has(eq.id)}
                             title={openByEquipment.has(eq.id) ? "Registre a devolução da movimentação antes" : undefined}
-                            onClick={() => { setError(null); setReturning({ item: eq, receivedBy: eq.received_from, notes: "" }); }}
+                            onClick={() => {
+                              setError(null);
+                              const now = new Date();
+                              setReturning({
+                                item: eq,
+                                receivedBy: eq.received_from,
+                                autoNow: true,
+                                returnedDate: localDate(now),
+                                returnedTime: localTime(now),
+                                notes: ""
+                              });
+                            }}
                           >
                             <Undo2 className="w-3.5 h-3.5" aria-hidden="true" /> Devolver ao dono
                           </button>
@@ -436,14 +738,22 @@ export function EquipamentosPage({
       </section>
 
       {/* Novo */}
-      <dialog ref={createRef} aria-labelledby="new-eq-title" className="m-auto w-[min(96vw,640px)] max-h-[92vh] rounded-xl p-0 overflow-auto shadow-xl">
+      <dialog ref={createRef} aria-labelledby="new-eq-title" className="m-auto w-[min(96vw,660px)] max-h-[92vh] rounded-xl p-0 overflow-auto shadow-xl">
         {creating && (
           <form onSubmit={submitCreate} className="p-5 space-y-4">
             <div className="flex items-center justify-between border-b pb-3" style={{ borderColor: "var(--border)" }}>
               <h2 id="new-eq-title" className="text-base font-semibold">Novo equipamento</h2>
               <button type="button" aria-label="Fechar" className="tw-btn tw-btn-sm" onClick={() => setCreating(null)}><X className="w-4 h-4" /></button>
             </div>
-            <EquipmentFormFields idPrefix="new-eq" value={creating} onChange={setCreating} />
+            <EquipmentFormFields
+              idPrefix="new-eq"
+              value={creating}
+              onChange={setCreating}
+              sectors={sectors}
+              suggestions={suggestions}
+              onCreateSector={onCreateSector}
+              allowAutoNow
+            />
             {errorBox}
             <div className="flex justify-end gap-2 pt-2 border-t" style={{ borderColor: "var(--border)" }}>
               <button type="button" className="tw-btn" onClick={() => setCreating(null)}>Cancelar</button>
@@ -454,7 +764,7 @@ export function EquipamentosPage({
       </dialog>
 
       {/* Editar */}
-      <dialog ref={editRef} aria-labelledby="edit-eq-title" className="m-auto w-[min(96vw,640px)] max-h-[92vh] rounded-xl p-0 overflow-auto shadow-xl">
+      <dialog ref={editRef} aria-labelledby="edit-eq-title" className="m-auto w-[min(96vw,660px)] max-h-[92vh] rounded-xl p-0 overflow-auto shadow-xl">
         {editing && (
           <form onSubmit={submitEdit} className="p-5 space-y-4">
             <div className="flex items-center justify-between border-b pb-3" style={{ borderColor: "var(--border)" }}>
@@ -465,6 +775,10 @@ export function EquipamentosPage({
               idPrefix="edit-eq"
               value={editing.fields}
               onChange={(fields) => setEditing({ ...editing, fields })}
+              sectors={sectors}
+              suggestions={suggestions}
+              onCreateSector={onCreateSector}
+              allowAutoNow={false}
               lockedCondition={
                 openByEquipment.has(editing.item.id)
                   ? `Está fora em ${openByEquipment.get(editing.item.id)!.document_code}. Registre a devolução para mudar a situação.`
@@ -493,17 +807,25 @@ export function EquipamentosPage({
                 <h2 id="eq-details-title" className="text-base font-semibold">{details.name}</h2>
                 <div className="text-xs font-mono" style={{ color: "var(--text-muted)" }}>{details.patrimony || "Sem patrimônio"}</div>
               </div>
-              <button type="button" aria-label="Fechar" className="tw-btn tw-btn-sm" onClick={() => setDetails(null)}><X className="w-4 h-4" /></button>
+              <div className="flex items-center gap-1.5">
+                {(details.ownership_type === "terceiro" || details.condition_status === "devolvido_dono") && (
+                  <button type="button" className="tw-btn tw-btn-sm" onClick={() => onPrintReceipt(details)}>
+                    <Printer className="w-3.5 h-3.5" aria-hidden="true" /> Comprovante PDF
+                  </button>
+                )}
+                <button type="button" aria-label="Fechar" className="tw-btn tw-btn-sm" onClick={() => setDetails(null)}><X className="w-4 h-4" /></button>
+              </div>
             </div>
             <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
               <div><dt className="text-xs" style={{ color: "var(--text-muted)" }}>Situação</dt><dd><span className="tw-badge" style={conditionStyle(details.condition_status)}>{CONDITION_LABELS[details.condition_status]}</span></dd></div>
               <div><dt className="text-xs" style={{ color: "var(--text-muted)" }}>Onde está</dt><dd>{whereIs(details)}</dd></div>
               <div><dt className="text-xs" style={{ color: "var(--text-muted)" }}>Posse</dt><dd>{OWNERSHIP_LABELS[details.ownership_type]}</dd></div>
               <div><dt className="text-xs" style={{ color: "var(--text-muted)" }}>Categoria</dt><dd>{details.category || "-"}</dd></div>
-              {details.ownership_type === "terceiro" && (
+              {(details.ownership_type === "terceiro" || details.origin || details.received_from) && (
                 <>
-                  <div><dt className="text-xs" style={{ color: "var(--text-muted)" }}>Recebido de</dt><dd>{details.received_from || "-"}</dd></div>
-                  <div><dt className="text-xs" style={{ color: "var(--text-muted)" }}>Origem</dt><dd>{details.origin || "-"}</dd></div>
+                  <div><dt className="text-xs" style={{ color: "var(--text-muted)" }}>Setor / origem</dt><dd>{details.origin || "-"}</dd></div>
+                  <div><dt className="text-xs" style={{ color: "var(--text-muted)" }}>Entregue à TI por</dt><dd>{details.received_from || "-"}</dd></div>
+                  <div><dt className="text-xs" style={{ color: "var(--text-muted)" }}>Recebido pela TI em</dt><dd>{formatDateTime(details.received_at || details.created_at)}</dd></div>
                 </>
               )}
               {details.condition_status === "devolvido_dono" && (
@@ -549,11 +871,44 @@ export function EquipamentosPage({
           <form onSubmit={submitReturnToOwner} className="space-y-4">
             <h2 id="owner-return-title" className="text-base font-semibold">Devolver {returning.item.name} ao dono</h2>
             <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-              O equipamento sai do acervo do TI (fica em Inativos) e o histórico é mantido.
+              O equipamento fica marcado como <strong>Devolvido ao dono</strong>, mantém todo o histórico de recebimento e entrega e libera emissão de comprovante PDF.
             </p>
             <div>
-              <label htmlFor="owner-received" className="tw-label">Quem recebeu <span aria-hidden="true">*</span></label>
+              <label htmlFor="owner-received" className="tw-label">Quem recebeu de volta <span aria-hidden="true">*</span></label>
               <input id="owner-received" required value={returning.receivedBy} onChange={(e) => setReturning({ ...returning, receivedBy: e.target.value })} className="tw-input" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                <span className="tw-label mb-0">Data/hora da entrega de volta</span>
+                <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={returning.autoNow}
+                    onChange={(e) => setReturning({ ...returning, autoNow: e.target.checked })}
+                  />
+                  <span>Agora</span>
+                </label>
+              </div>
+              {!returning.autoNow && (
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    type="date"
+                    aria-label="Data da devolução ao dono"
+                    value={returning.returnedDate}
+                    onChange={(e) => setReturning({ ...returning, returnedDate: e.target.value })}
+                    className="tw-input"
+                    required
+                  />
+                  <input
+                    type="time"
+                    aria-label="Hora da devolução ao dono"
+                    value={returning.returnedTime}
+                    onChange={(e) => setReturning({ ...returning, returnedTime: e.target.value })}
+                    className="tw-input"
+                    required
+                  />
+                </div>
+              )}
             </div>
             <div>
               <label htmlFor="owner-notes" className="tw-label">Observações</label>

@@ -1,12 +1,14 @@
 import { Check, Clock, History, Pencil, Plus, Printer, Undo2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { EquipmentPicker, type EquipmentSelection } from "../components/EquipmentPicker";
+import { OnlineOnlyNotice } from "../components/OnlineOnlyNotice";
 import { PageIntro } from "../components/PageIntro";
 import { findCatalogSector, SectorSelector } from "../components/SectorSelector";
 import { apiRequest } from "../services/api";
 import type {
   AuditLogItem,
   CatalogEquipment,
+  CatalogLocation,
   CatalogSector,
   MovementItem,
   MovementType,
@@ -20,6 +22,16 @@ import {
   movementStatusLabel,
   movementStatusStyle
 } from "../types/labels";
+import {
+  addDays,
+  dueDateToIso,
+  isoToLocalDate,
+  isoToLocalTime,
+  localDate,
+  localTime,
+  toIso
+} from "../utils/dateInput";
+import { collectSectorFilterOptions, matchMovementSector } from "../utils/sectorFilters";
 
 type MovementPayload = {
   movement_type: MovementType;
@@ -39,7 +51,9 @@ interface MovimentacoesPageProps {
   items: MovementItem[];
   equipments: CatalogEquipment[];
   sectors: CatalogSector[];
+  locations: CatalogLocation[];
   suggestions: SuggestionsPayload;
+  online: boolean;
   loanDefaultDays: number;
   onCreate: (payload: MovementPayload) => Promise<void>;
   onUpdate: (item: MovementItem, patch: Partial<MovementPayload>) => Promise<void>;
@@ -48,39 +62,6 @@ interface MovimentacoesPageProps {
   onPrintSingle: (item: MovementItem) => void;
   onPrintList: (items: MovementItem[], title?: string) => void;
   onOpenAudit: (item: MovementItem) => void;
-}
-
-// ---------- utilidades de data (campos locais <-> ISO) ----------
-const pad = (n: number) => String(n).padStart(2, "0");
-const localDate = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-const localTime = (d = new Date()) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-
-function toIso(date: string, time: string): string | null {
-  const d = new Date(`${date}T${time || "00:00"}:00`);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
-}
-
-/** Prazo no fim do dia escolhido (23:59 local). */
-function dueDateToIso(date: string): string | null {
-  return date ? toIso(date, "23:59") : null;
-}
-
-function addDays(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return localDate(d);
-}
-
-function isoToLocalDate(iso: string | null | undefined): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "" : localDate(d);
-}
-
-function isoToLocalTime(iso: string | null | undefined): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "" : localTime(d);
 }
 
 function useDialog(open: boolean, onClose: () => void) {
@@ -156,7 +137,9 @@ interface MovementFormFieldsProps {
   equipments: CatalogEquipment[];
   movements: MovementItem[];
   sectors: CatalogSector[];
+  locations: CatalogLocation[];
   suggestions: SuggestionsPayload;
+  loanDefaultDays: number;
   onCreateSector: MovimentacoesPageProps["onCreateSector"];
   editingMovementId?: number;
   allowAutoNow: boolean;
@@ -169,12 +152,32 @@ function MovementFormFields({
   equipments,
   movements,
   sectors,
+  locations,
   suggestions,
+  loanDefaultDays,
   onCreateSector,
   editingMovementId,
   allowAutoNow
 }: MovementFormFieldsProps) {
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm({ ...form, [key]: value });
+  const handleTypeChange = (type: MovementType) => {
+    if (type === "emprestimo" && !form.dueDate && loanDefaultDays > 0) {
+      setForm({ ...form, movementType: type, hasDue: true, dueDate: addDays(loanDefaultDays) });
+      return;
+    }
+    set("movementType", type);
+  };
+  const matchedSector = findCatalogSector(sectors, form.sectorName);
+  const sectorLocations = matchedSector
+    ? locations.filter((l) => l.active === 1 && l.sector_id === matchedSector.id)
+    : [];
+  const locationOptions = Array.from(
+    new Set([
+      ...sectorLocations.map((l) => l.name),
+      ...locations.filter((l) => l.active === 1 && l.sector_id === null).map((l) => l.name),
+      ...suggestions.locations
+    ])
+  );
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -183,7 +186,7 @@ function MovementFormFields({
         <div className="flex flex-wrap gap-4 text-sm">
           {(["emprestimo", "instalacao_fixa"] as const).map((type) => (
             <label key={type} className="inline-flex items-center gap-2 cursor-pointer">
-              <input type="radio" name={`${idPrefix}-type`} checked={form.movementType === type} onChange={() => set("movementType", type)} />
+              <input type="radio" name={`${idPrefix}-type`} checked={form.movementType === type} onChange={() => handleTypeChange(type)} />
               <span>{type === "emprestimo" ? "Empréstimo" : "Instalação fixa"}</span>
             </label>
           ))}
@@ -225,8 +228,28 @@ function MovementFormFields({
         </label>
         <input id={`${idPrefix}-local`} list={`${idPrefix}-local-list`} required value={form.installLocation} onChange={(e) => set("installLocation", e.target.value)} placeholder="Sala ou ambiente" className="tw-input" />
         <datalist id={`${idPrefix}-local-list`}>
-          {suggestions.locations.map((loc) => <option key={loc} value={loc} />)}
+          {locationOptions.map((loc) => <option key={loc} value={loc} />)}
         </datalist>
+        {sectorLocations.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 mt-1.5 text-xs">
+            <span style={{ color: "var(--text-muted)" }}>Do setor:</span>
+            {sectorLocations.slice(0, 6).map((loc) => (
+              <button
+                key={loc.id}
+                type="button"
+                onClick={() => set("installLocation", loc.name)}
+                className="px-2 py-0.5 rounded-full border cursor-pointer"
+                style={
+                  form.installLocation.trim().toLowerCase() === loc.name.toLowerCase()
+                    ? { backgroundColor: "var(--brand-soft)", borderColor: "var(--brand)", color: "var(--brand)" }
+                    : { backgroundColor: "var(--bg)", borderColor: "var(--border)" }
+                }
+              >
+                {loc.name}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div>
@@ -252,7 +275,17 @@ function MovementFormFields({
               className="tw-input"
             />
             <label className="mt-1 inline-flex items-center gap-2 text-xs cursor-pointer">
-              <input type="checkbox" checked={!form.hasDue} onChange={(e) => setForm({ ...form, hasDue: !e.target.checked, dueDate: form.dueDate || addDays(7) })} />
+              <input
+                type="checkbox"
+                checked={!form.hasDue}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    hasDue: !e.target.checked,
+                    dueDate: form.dueDate || addDays(loanDefaultDays > 0 ? loanDefaultDays : 7)
+                  })
+                }
+              />
               <span>Sem prazo</span>
             </label>
           </>
@@ -302,7 +335,9 @@ export function MovimentacoesPage({
   items,
   equipments,
   sectors,
+  locations,
   suggestions,
+  online,
   loanDefaultDays,
   onCreate,
   onUpdate,
@@ -319,6 +354,7 @@ export function MovimentacoesPage({
 
   const [tab, setTab] = useState<"abertos" | "historico" | "logs">("abertos");
   const [openFilter, setOpenFilter] = useState<OpenFilter>("todos");
+  const [openSector, setOpenSector] = useState("all");
   const [search, setSearch] = useState("");
   const [histStatus, setHistStatus] = useState<"all" | "ativo" | "devolvido" | "fixo">("all");
   const [histSector, setHistSector] = useState("all");
@@ -347,28 +383,27 @@ export function MovimentacoesPage({
 
   const matches = (m: MovementItem, q: string) =>
     !q ||
-    [m.document_code, m.equipment_name, m.patrimony, m.sector_name, m.install_location, m.received_by, m.registered_by_name]
+    [m.document_code, m.equipment_name, m.patrimony, m.sector_name, m.install_location, m.received_by, m.registered_by_name, m.notes]
       .join(" ")
       .toLowerCase()
       .includes(q);
 
+  const sectorOptions = useMemo(
+    () => collectSectorFilterOptions(sectors, equipments, items),
+    [sectors, equipments, items]
+  );
+
   const q = search.trim().toLowerCase();
+  const openSectorOpt = openSector === "all" ? null : sectorOptions.find((s) => s.name === openSector) ?? { id: null, name: openSector };
   const filteredOpen = (openFilter === "emprestimos" ? loans : openFilter === "atrasados" ? overdue : openFilter === "instalacoes" ? installs : openItems)
+    .filter((m) => (!openSectorOpt ? true : matchMovementSector(m, openSectorOpt)))
     .filter((m) => matches(m, q))
     .sort((a, b) => Number(isOverdue(b)) - Number(isOverdue(a)) || b.out_at.localeCompare(a.out_at));
 
-  const sectorOptions = useMemo(
-    () => Array.from(new Set(items.map((m) => m.sector_name))).sort((a, b) => a.localeCompare(b, "pt-BR")),
-    [items]
-  );
-
+  const histSectorOpt = histSector === "all" ? null : sectorOptions.find((s) => s.name === histSector) ?? { id: null, name: histSector };
   const filteredHistory = items.filter((m) => {
     if (histStatus !== "all" && m.status !== histStatus) return false;
-    if (histSector !== "all") {
-      // Compara pelo id do setor quando existe (nomes mudam quando o setor é renomeado).
-      const sel = sectors.find((s) => s.name === histSector);
-      if (sel ? m.sector_id !== sel.id && m.sector_name !== histSector : m.sector_name !== histSector) return false;
-    }
+    if (histSectorOpt && !matchMovementSector(m, histSectorOpt)) return false;
     return matches(m, q);
   });
 
@@ -609,8 +644,14 @@ export function MovimentacoesPage({
                 className="tw-btn"
                 onClick={() =>
                   tab === "abertos"
-                    ? onPrintList(filteredOpen, "Movimentações em aberto")
-                    : onPrintList(filteredHistory, "Histórico de movimentações")
+                    ? onPrintList(
+                        filteredOpen,
+                        openSectorOpt ? `Em aberto — ${openSectorOpt.name}` : "Movimentações em aberto"
+                      )
+                    : onPrintList(
+                        filteredHistory,
+                        histSectorOpt ? `Histórico — ${histSectorOpt.name}` : "Histórico de movimentações"
+                      )
                 }
               >
                 <Printer className="w-4 h-4" aria-hidden="true" /> PDF
@@ -621,27 +662,40 @@ export function MovimentacoesPage({
 
         {tab === "abertos" && (
           <>
-            <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filtrar em aberto">
-              {(
-                [
-                  ["todos", `Todos (${openItems.length})`],
-                  ["emprestimos", `Empréstimos (${loans.length})`],
-                  ["atrasados", `Atrasados (${overdue.length})`],
-                  ["instalacoes", `Instalações fixas (${installs.length})`]
-                ] as Array<[OpenFilter, string]>
-              ).map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  aria-pressed={openFilter === key}
-                  onClick={() => setOpenFilter(key)}
-                  className="px-3 py-1.5 rounded-full text-xs font-semibold border cursor-pointer"
-                  style={openFilter === key ? { backgroundColor: "var(--brand-soft)", borderColor: "var(--brand)", color: "var(--brand)" } : { borderColor: "var(--border)", color: "var(--text-muted)" }}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+            <search className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filtrar em aberto">
+                {(
+                  [
+                    ["todos", `Todos (${openItems.length})`],
+                    ["emprestimos", `Empréstimos (${loans.length})`],
+                    ["atrasados", `Atrasados (${overdue.length})`],
+                    ["instalacoes", `Instalações fixas (${installs.length})`]
+                  ] as Array<[OpenFilter, string]>
+                ).map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    aria-pressed={openFilter === key}
+                    onClick={() => setOpenFilter(key)}
+                    className="px-3 py-1.5 rounded-full text-xs font-semibold border cursor-pointer"
+                    style={openFilter === key ? { backgroundColor: "var(--brand-soft)", borderColor: "var(--brand)", color: "var(--brand)" } : { borderColor: "var(--border)", color: "var(--text-muted)" }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <select
+                aria-label="Filtrar setor em aberto"
+                value={openSector}
+                onChange={(e) => setOpenSector(e.target.value)}
+                className="tw-input sm:w-56"
+              >
+                <option value="all">Todos os setores</option>
+                {sectorOptions.map((s) => (
+                  <option key={s.name} value={s.name}>{s.name}</option>
+                ))}
+              </select>
+            </search>
 
             {filteredOpen.length === 0 ? (
               <p className="text-sm py-6 text-center" style={{ color: "var(--text-muted)" }}>
@@ -712,7 +766,7 @@ export function MovimentacoesPage({
               </select>
               <select aria-label="Filtrar setor" value={histSector} onChange={(e) => setHistSector(e.target.value)} className="tw-input sm:w-52">
                 <option value="all">Todos os setores</option>
-                {sectorOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+                {sectorOptions.map((s) => <option key={s.name} value={s.name}>{s.name}</option>)}
               </select>
             </div>
             <div className="table-wrapper" role="region" aria-label="Histórico de movimentações" tabIndex={0}>
@@ -765,6 +819,7 @@ export function MovimentacoesPage({
 
         {tab === "logs" && (
           <div className="space-y-2">
+            {!online && <OnlineOnlyNotice text="Você está offline. Os registros completos de movimentações exigem conexão." />}
             {logsError && <p className="text-sm" style={{ color: "var(--warn)" }}>{logsError}</p>}
             {!loadingLogs && !logsError && logs.length === 0 && (
               <p className="text-sm" style={{ color: "var(--text-muted)" }}>Nenhum registro de movimentação.</p>
@@ -808,7 +863,9 @@ export function MovimentacoesPage({
               equipments={equipments}
               movements={items}
               sectors={sectors}
+              locations={locations}
               suggestions={suggestions}
+              loanDefaultDays={loanDefaultDays}
               onCreateSector={onCreateSector}
               allowAutoNow
             />
@@ -836,7 +893,9 @@ export function MovimentacoesPage({
               equipments={equipments}
               movements={items}
               sectors={sectors}
+              locations={locations}
               suggestions={suggestions}
+              loanDefaultDays={loanDefaultDays}
               onCreateSector={onCreateSector}
               editingMovementId={editing.item.id}
               allowAutoNow={false}

@@ -39,3 +39,16 @@ export async function apiRequest<T>(path: string, init?: RequestInit): Promise<T
 
   return data as T;
 }
+
+export function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(new Error("Não foi possível ler o arquivo selecionado."));
+    reader.readAsDataURL(file);
+  });
+}

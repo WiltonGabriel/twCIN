@@ -2,11 +2,13 @@ import { Pencil, Plus, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { apiRequest } from "../services/api";
 import type { CatalogLocation, CatalogSector, SuggestionsPayload } from "../types";
+import { OnlineOnlyNotice } from "./OnlineOnlyNotice";
 
 interface CadastrosPanelProps {
   sectors: CatalogSector[];
   locations: CatalogLocation[];
   suggestions: SuggestionsPayload;
+  online: boolean;
   onCreateSector: (payload: { name: string; is_default?: boolean }) => Promise<CatalogSector>;
   onRefresh: () => Promise<void>;
 }
@@ -30,7 +32,7 @@ function useDialog(open: boolean, onClose: () => void) {
 }
 
 /** Setores e locais de destino (antes ficavam dentro de Movimentações). */
-export function CadastrosPanel({ sectors, locations, suggestions, onCreateSector, onRefresh }: CadastrosPanelProps) {
+export function CadastrosPanel({ sectors, locations, suggestions, online, onCreateSector, onRefresh }: CadastrosPanelProps) {
   const [newSectorName, setNewSectorName] = useState("");
   const [newSectorDefault, setNewSectorDefault] = useState(false);
   const [newLocationName, setNewLocationName] = useState("");
@@ -114,6 +116,9 @@ export function CadastrosPanel({ sectors, locations, suggestions, onCreateSector
 
   return (
     <div className="space-y-5">
+      {!online && (
+        <OnlineOnlyNotice text="Você está offline. Novos setores vão para a fila de envio; locais e edições exigem conexão." />
+      )}
       {error && (
         <div role="alert" className="px-3 py-2 rounded-lg border text-sm" style={{ backgroundColor: "var(--cin-red-soft)", borderColor: "var(--cin-red)", color: "var(--cin-red)" }}>
           {error}
@@ -144,7 +149,7 @@ export function CadastrosPanel({ sectors, locations, suggestions, onCreateSector
                   {sec.is_default === 1 && sec.active === 1 && <span className="tw-badge" style={{ backgroundColor: "var(--brand-soft)", color: "var(--brand)" }}>Padrão</span>}
                   {sec.active === 0 && <span className="tw-badge" style={{ backgroundColor: "var(--cin-red-soft)", color: "var(--cin-red)" }}>Inativo</span>}
                 </div>
-                <button type="button" className="tw-btn tw-btn-sm" onClick={() => setEditingSec({ ...sec })}>
+                <button type="button" className="tw-btn tw-btn-sm" disabled={!online} onClick={() => setEditingSec({ ...sec })}>
                   <Pencil className="w-3 h-3" aria-hidden="true" /> Editar
                 </button>
               </li>
@@ -173,7 +178,7 @@ export function CadastrosPanel({ sectors, locations, suggestions, onCreateSector
           <form onSubmit={handleAddLocation} className="space-y-2">
             <div className="flex gap-2">
               <input aria-label="Nome do local" required value={newLocationName} onChange={(e) => setNewLocationName(e.target.value)} placeholder="Ex.: Sala 104, Auditório" className="tw-input flex-1" />
-              <button type="submit" className="tw-btn tw-btn-primary shrink-0">
+              <button type="submit" disabled={!online} className="tw-btn tw-btn-primary shrink-0">
                 <Plus className="w-4 h-4" aria-hidden="true" /> Adicionar
               </button>
             </div>
@@ -197,7 +202,7 @@ export function CadastrosPanel({ sectors, locations, suggestions, onCreateSector
                       {loc.active === 0 && <span style={{ color: "var(--cin-red)" }}>Inativo</span>}
                     </div>
                   </div>
-                  <button type="button" className="tw-btn tw-btn-sm" onClick={() => setEditingLoc({ ...loc })}>
+                  <button type="button" className="tw-btn tw-btn-sm" disabled={!online} onClick={() => setEditingLoc({ ...loc })}>
                     <Pencil className="w-3 h-3" aria-hidden="true" /> Editar
                   </button>
                 </li>

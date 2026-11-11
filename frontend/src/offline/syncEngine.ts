@@ -9,6 +9,7 @@ import type {
   TiUser
 } from "../types";
 import {
+  applyLocalEquipmentCondition,
   belongsTo,
   offlineDb,
   saveCachedSettings,
@@ -93,9 +94,27 @@ export async function applySnapshotToLocalDb(snapshot: SnapshotResponse): Promis
       const stillQueued = await offlineDb.syncQueue.orderBy("id").toArray();
       for (const entry of stillQueued) {
         if (!entry.optimistic) continue;
-        if (entry.optimistic.table === "movements") await offlineDb.movements.put(entry.optimistic.record);
-        else if (entry.optimistic.table === "equipments") await offlineDb.equipments.put(entry.optimistic.record);
-        else await offlineDb.sectors.put(entry.optimistic.record);
+        if (entry.optimistic.table === "movements") {
+          const mov = entry.optimistic.record;
+          await offlineDb.movements.put(mov);
+          const equipClientUuid = entry.payload.equipment_client_uuid;
+          const resolvedEq =
+            typeof equipClientUuid === "string" ? await offlineDb.equipments.get(equipClientUuid) : undefined;
+          const targetEquipId = resolvedEq?.id ?? mov.equipment_id;
+          if (entry.type === "movement.return") {
+            await applyLocalEquipmentCondition(targetEquipId, "disponivel", true);
+          } else if (mov.status === "ativo" || mov.status === "fixo") {
+            await applyLocalEquipmentCondition(
+              targetEquipId,
+              mov.movement_type === "instalacao_fixa" ? "em_uso" : "emprestado",
+              true
+            );
+          }
+        } else if (entry.optimistic.table === "equipments") {
+          await offlineDb.equipments.put(entry.optimistic.record);
+        } else {
+          await offlineDb.sectors.put(entry.optimistic.record);
+        }
       }
     }
   );

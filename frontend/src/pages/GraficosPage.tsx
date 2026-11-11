@@ -178,7 +178,7 @@ export function GraficosPage({ equipments, movements }: GraficosPageProps) {
   // 5. Movement status breakdown
   const statusBreakdownRows = [
     {
-      label: "Fora de (em aberto)",
+      label: "Emprestados (em aberto)",
       count: filteredMovements.filter((m) => m.status === "ativo").length,
       color: "var(--brand)"
     },
@@ -242,7 +242,7 @@ export function GraficosPage({ equipments, movements }: GraficosPageProps) {
           </div>
         </div>
         <div className="rounded-xl border p-4" style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}>
-          <span className="text-xs" style={{ color: "var(--text-muted)" }}>Fora de (em aberto)</span>
+          <span className="text-xs" style={{ color: "var(--text-muted)" }}>Emprestados (em aberto)</span>
           <div className="text-2xl font-bold mt-1" style={{ color: "var(--brand)" }}>
             {activeLoansCount}
           </div>

@@ -1,4 +1,4 @@
-import { Eye, EyeOff, LogOut } from "lucide-react";
+import { Lock, LogOut } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { ApiError } from "../services/api";
 import type { AuthUser, PublicSettings } from "../types";
@@ -19,7 +19,6 @@ export function ForcePasswordChangePage({
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [showPasswords, setShowPasswords] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,6 +28,11 @@ export function ForcePasswordChangePage({
 
     if (newPassword.length < 8) {
       setError("A nova senha deve ter no mínimo 8 caracteres.");
+      return;
+    }
+
+    if (newPassword === currentPassword) {
+      setError("A nova senha deve ser diferente da senha atual.");
       return;
     }
 
@@ -73,82 +77,80 @@ export function ForcePasswordChangePage({
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onLogout}
-            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs border cursor-pointer"
-            style={{ borderColor: "var(--border)" }}
-          >
+          <button type="button" onClick={onLogout} className="tw-btn tw-btn-sm">
             <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
             Sair
           </button>
         </div>
 
-        <p className="text-xs" style={{ color: "var(--text-muted)" }}>
-          No primeiro acesso é obrigatório escolher uma nova senha pessoal (mínimo 8 caracteres).
+        <p id="fp-hint" className="text-xs flex items-start gap-2" style={{ color: "var(--text-muted)" }}>
+          <Lock className="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden="true" />
+          <span>
+            No primeiro acesso é obrigatório escolher uma nova senha pessoal (mín. 8 caracteres). As senhas são armazenadas
+            de forma criptografada e não podem ser exibidas.
+          </span>
         </p>
 
         <form method="POST" onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-1.5">
-            <label htmlFor="fp-current" className="block text-sm font-medium">
+          <div>
+            <label htmlFor="fp-current" className="tw-label">
               Senha atual <span aria-hidden="true">*</span>
             </label>
             <input
               id="fp-current"
               name="current_password"
-              type={showPasswords ? "text" : "password"}
+              type="password"
               autoComplete="current-password"
               required
               value={currentPassword}
-              onChange={(e) => setCurrentPassword(e.target.value)}
+              onChange={(e) => {
+                setCurrentPassword(e.target.value);
+                if (error) setError(null);
+              }}
               className="tw-input"
             />
           </div>
 
-          <div className="space-y-1.5">
-            <label htmlFor="fp-new" className="block text-sm font-medium">
+          <div>
+            <label htmlFor="fp-new" className="tw-label">
               Nova senha <span aria-hidden="true">*</span>
             </label>
             <input
               id="fp-new"
               name="new_password"
-              type={showPasswords ? "text" : "password"}
+              type="password"
+              aria-describedby="fp-hint"
               autoComplete="new-password"
               minLength={8}
               required
               value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
+              onChange={(e) => {
+                setNewPassword(e.target.value);
+                if (error) setError(null);
+              }}
               className="tw-input"
             />
           </div>
 
-          <div className="space-y-1.5">
-            <label htmlFor="fp-confirm" className="block text-sm font-medium">
+          <div>
+            <label htmlFor="fp-confirm" className="tw-label">
               Confirmar nova senha <span aria-hidden="true">*</span>
             </label>
             <input
               id="fp-confirm"
               name="confirm_password"
-              type={showPasswords ? "text" : "password"}
+              type="password"
               autoComplete="new-password"
               minLength={8}
               required
               value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
+              onChange={(e) => {
+                setConfirmPassword(e.target.value);
+                if (error) setError(null);
+              }}
               className="tw-input"
             />
           </div>
-
-          <button
-            type="button"
-            aria-pressed={showPasswords}
-            onClick={() => setShowPasswords((v) => !v)}
-            className="inline-flex items-center gap-1.5 text-xs font-medium cursor-pointer"
-            style={{ color: "var(--text-muted)" }}
-          >
-            {showPasswords ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-            <span>{showPasswords ? "Ocultar senhas" : "Mostrar senhas"}</span>
-          </button>
 
           {error && (
             <div
@@ -167,8 +169,7 @@ export function ForcePasswordChangePage({
           <button
             type="submit"
             disabled={submitting}
-            className="w-full min-h-[46px] rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-60"
-            style={{ backgroundColor: "var(--brand)", color: "var(--brand-fg)" }}
+            className="w-full tw-btn tw-btn-primary min-h-[46px]"
           >
             {submitting ? "Salvando..." : "Salvar nova senha e entrar"}
           </button>

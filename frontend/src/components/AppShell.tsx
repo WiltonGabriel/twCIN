@@ -1,4 +1,4 @@
-import { ArrowLeftRight, Home, LogOut, Monitor, RefreshCw, Settings, Wifi, WifiOff } from "lucide-react";
+import { ArrowLeftRight, Building2, Check, Home, LogOut, Monitor, RefreshCw, Settings, Wifi, WifiOff } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AuthUser, PageKey, PublicSettings } from "../types";
 
@@ -7,11 +7,13 @@ interface AppShellProps {
   settings: PublicSettings;
   activePage: PageKey;
   onNavigate: (page: PageKey) => void;
+  onOpenAccount: () => void;
   onLogout: () => void;
   online: boolean;
   pendingCount: number;
   failedCount: number;
   syncing: boolean;
+  justSynced?: boolean;
   syncNotice: string | null;
   onClearSyncNotice: () => void;
   onSyncNow: () => void;
@@ -23,6 +25,7 @@ const NAV_ITEMS: Array<{ key: PageKey; label: string; icon: typeof Home }> = [
   { key: "inicio", label: "Início", icon: Home },
   { key: "equipamentos", label: "Equipamentos", icon: Monitor },
   { key: "movimentacoes", label: "Movimentações", icon: ArrowLeftRight },
+  { key: "setores", label: "Por Setor", icon: Building2 },
   { key: "configuracoes", label: "Configurações", icon: Settings }
 ];
 
@@ -31,11 +34,13 @@ export function AppShell({
   settings,
   activePage,
   onNavigate,
+  onOpenAccount,
   onLogout,
   online,
   pendingCount,
   failedCount,
   syncing,
+  justSynced = false,
   syncNotice,
   onClearSyncNotice,
   onSyncNow,
@@ -52,7 +57,9 @@ export function AppShell({
         ? `Enviando (${pendingCount})`
         : failedCount > 0
           ? `${failedCount} com problema`
-          : "Online";
+          : justSynced
+            ? "Atualizado"
+            : "Online";
 
   const syncColor = !online ? "var(--cin-red)" : pendingCount > 0 || failedCount > 0 ? "var(--warn)" : "var(--ok)";
 
@@ -60,15 +67,25 @@ export function AppShell({
     <div className="min-h-screen flex flex-col">
       <header className="no-print sticky top-0 z-30 border-b" style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}>
         <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
+          <a
+            href="#inicio"
+            draggable={false}
+            title="Ir para o Início (clique) ou selecione para copiar"
+            onClick={(e) => {
+              e.preventDefault();
+              if (window.getSelection()?.toString().trim()) return;
+              onNavigate("inicio");
+            }}
+            className="flex items-center gap-3 min-w-0 select-text rounded-lg py-0.5 pr-2 cursor-pointer no-underline text-inherit"
+          >
             <div className="bg-white rounded-md px-2 py-1 border border-slate-200 shrink-0">
-              <img src={settings.logo_data_url || "/logo.svg"} alt="" className="h-6 w-auto block" />
+              <img src={settings.logo_data_url || "/logo.svg"} alt="" draggable={false} className="h-6 w-auto block" />
             </div>
-            <div className="min-w-0">
-              <div className="text-sm font-bold tracking-tight truncate">{settings.app_name}</div>
-              <div className="text-xs truncate" style={{ color: "var(--text-muted)" }}>{settings.org_name}</div>
+            <div className="min-w-0 select-text">
+              <div className="text-sm font-bold tracking-tight truncate select-text">{settings.app_name}</div>
+              <div className="text-xs truncate select-text" style={{ color: "var(--text-muted)" }}>{settings.org_name}</div>
             </div>
-          </div>
+          </a>
 
           <nav aria-label="Navegação principal" className="hidden md:flex items-center gap-1">
             {NAV_ITEMS.map((item) => {
@@ -96,20 +113,29 @@ export function AppShell({
               onClick={failedCount > 0 ? onOpenSync : onSyncNow}
               title={failedCount > 0 ? "Ver alterações com problema" : online ? "Sincronizar agora" : "Sem conexão"}
               aria-label={`Sincronização: ${syncLabel}`}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border cursor-pointer"
+              className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 sm:min-w-[7.25rem] rounded-lg text-xs font-medium border cursor-pointer transition-colors duration-150"
               style={{ borderColor: "var(--border)", backgroundColor: "var(--surface-alt)", color: syncColor }}
             >
               {!online ? (
                 <WifiOff className="w-3.5 h-3.5" aria-hidden="true" />
               ) : syncing ? (
                 <RefreshCw className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+              ) : justSynced ? (
+                <Check className="w-3.5 h-3.5" aria-hidden="true" />
               ) : (
                 <Wifi className="w-3.5 h-3.5" aria-hidden="true" />
               )}
               <span className="hidden sm:inline">{syncLabel}</span>
             </button>
 
-            <span className="hidden lg:inline text-sm font-medium px-1">{user.full_name}</span>
+            <button
+              type="button"
+              onClick={onOpenAccount}
+              title="Abrir Minha conta"
+              className="hidden lg:inline-flex items-center px-2.5 py-1.5 rounded-lg text-sm font-medium cursor-pointer transition-colors hover:bg-black/5 dark:hover:bg-white/10"
+            >
+              {user.full_name}
+            </button>
 
             <button
               type="button"
@@ -141,17 +167,29 @@ export function AppShell({
         </div>
       )}
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-5 pb-24 md:pb-8">{children}</main>
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-5 pb-24 md:pb-8">
+        <div key={activePage} className="tw-page-enter">
+          {children}
+        </div>
+      </main>
 
-      {/* Barra inferior no celular: os 4 destinos principais sempre à mão. */}
+      {/* Barra inferior no celular: destinos principais sempre à mão. */}
       <nav
         aria-label="Navegação principal (celular)"
-        className="no-print md:hidden fixed bottom-0 inset-x-0 z-30 border-t grid grid-cols-4"
+        className="no-print md:hidden fixed bottom-0 inset-x-0 z-30 border-t grid grid-cols-5"
         style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)", paddingBottom: "env(safe-area-inset-bottom)" }}
       >
         {NAV_ITEMS.map((item) => {
           const active = activePage === item.key;
           const Icon = item.icon;
+          const mobileLabel =
+            item.label === "Movimentações"
+              ? "Movimentar"
+              : item.label === "Por Setor"
+                ? "Setores"
+                : item.label === "Configurações"
+                  ? "Ajustes"
+                  : item.label;
           return (
             <button
               key={item.key}
@@ -162,7 +200,7 @@ export function AppShell({
               style={{ color: active ? "var(--brand)" : "var(--text-muted)" }}
             >
               <Icon className="w-5 h-5" aria-hidden="true" />
-              {item.label === "Movimentações" ? "Movimentar" : item.label === "Configurações" ? "Ajustes" : item.label}
+              {mobileLabel}
             </button>
           );
         })}

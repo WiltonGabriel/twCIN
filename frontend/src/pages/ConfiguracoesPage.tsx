@@ -3,15 +3,17 @@ import {
   Building2,
   CalendarClock,
   CheckCircle2,
+  Crop,
   Download,
-  Eye,
-  EyeOff,
   FileDown,
+  Info,
   ListChecks,
+  Lock,
   LogOut,
   MapPin,
   Monitor,
   Moon,
+  Paintbrush,
   Palette,
   RefreshCw,
   Smartphone,
@@ -20,15 +22,20 @@ import {
   UserCircle2,
   Users
 } from "lucide-react";
-import { useState, type ChangeEvent, type FormEvent } from "react";
+import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
+import { AppearancePanel } from "../components/AppearancePanel";
 import { AuditPanel } from "../components/AuditPanel";
 import { CadastrosPanel } from "../components/CadastrosPanel";
 import { ExportPanel } from "../components/ExportPanel";
+import { ImageEditorModal } from "../components/ImageEditorModal";
+import { OnlineOnlyNotice } from "../components/OnlineOnlyNotice";
 import { PageIntro } from "../components/PageIntro";
+import { SobrePanel } from "../components/SobrePanel";
 import { SyncPanel } from "../components/SyncPanel";
 import type { PwaInstallState } from "../hooks/usePwaInstall";
 import type { FailedOpEntry } from "../offline/db";
 import { apiRequest, ApiError } from "../services/api";
+import { downloadDataUrl } from "../utils/imageEditor";
 import type {
   AuthUser,
   CatalogEquipment,
@@ -46,13 +53,15 @@ export type SettingsTab =
   | "conta"
   | "preferencias"
   | "organizacao"
+  | "aparencia"
   | "cadastros"
   | "regras"
   | "equipe"
   | "sincronizacao"
   | "auditoria"
   | "exportar"
-  | "aplicativo";
+  | "aplicativo"
+  | "sobre";
 
 interface ConfiguracoesPageProps {
   user: AuthUser;
@@ -79,6 +88,8 @@ interface ConfiguracoesPageProps {
   onChangeTheme: (pref: ThemePreference) => void;
   onChangePassword: (currentPassword: string, newPassword: string) => Promise<AuthUser>;
   onSettingsUpdated: (settings: PublicSettings) => void;
+  onPreviewAppearance: (draft: PublicSettings | null) => void;
+  onBackupRestored: () => Promise<void>;
   onLogoutAll: () => Promise<void>;
 }
 
@@ -96,7 +107,8 @@ const NAV_GROUPS: Array<{
   {
     label: "Sistema",
     items: [
-      { id: "organizacao", label: "Organização", hint: "Nome e logo", icon: Building2 },
+      { id: "organizacao", label: "Organização", hint: "Nome, unidade, contato e logo", icon: Building2 },
+      { id: "aparencia", label: "Aparência", hint: "Paleta de cores e fundo", icon: Paintbrush },
       { id: "cadastros", label: "Cadastros", hint: "Setores e locais", icon: MapPin },
       { id: "regras", label: "Regras de empréstimo", hint: "Prazo padrão", icon: CalendarClock },
       { id: "equipe", label: "Equipe", hint: "Usuários e acessos", icon: Users }
@@ -108,12 +120,14 @@ const NAV_GROUPS: Array<{
       { id: "sincronizacao", label: "Sincronização", hint: "Pendências offline", icon: RefreshCw },
       { id: "auditoria", label: "Auditoria", hint: "Quem fez o quê", icon: ListChecks },
       { id: "exportar", label: "Exportar e backup", hint: "CSV e cópia do banco", icon: FileDown },
-      { id: "aplicativo", label: "Aplicativo", hint: "Instalar no dispositivo", icon: Smartphone }
+      { id: "aplicativo", label: "Aplicativo", hint: "Instalar no dispositivo", icon: Smartphone },
+      { id: "sobre", label: "Sobre", hint: "Versão e informações", icon: Info }
     ]
   }
 ];
 
 const ALL_NAV = NAV_GROUPS.flatMap((g) => g.items);
+const ADMIN_TABS = new Set<SettingsTab>(["organizacao", "aparencia", "regras", "equipe"]);
 
 export function ConfiguracoesPage({
   user,
@@ -140,11 +154,19 @@ export function ConfiguracoesPage({
   onChangeTheme,
   onChangePassword,
   onSettingsUpdated,
+  onPreviewAppearance,
+  onBackupRestored,
   onLogoutAll
 }: ConfiguracoesPageProps) {
-  const [subTab, setSubTab] = useState<SettingsTab>(initialTab ?? "conta");
+  const isAdmin = user.role !== "tecnico";
+  const visibleGroups = NAV_GROUPS.map((g) => ({
+    ...g,
+    items: isAdmin ? g.items : g.items.filter((item) => !ADMIN_TABS.has(item.id))
+  }));
+  const initialAllowed = initialTab && (isAdmin || !ADMIN_TABS.has(initialTab)) ? initialTab : undefined;
+  const [subTab, setSubTab] = useState<SettingsTab>(initialAllowed ?? "conta");
   /** No celular, o menu e a seção ocupam a tela inteira, um de cada vez. */
-  const [mobileShowSection, setMobileShowSection] = useState(Boolean(initialTab));
+  const [mobileShowSection, setMobileShowSection] = useState(Boolean(initialAllowed));
   const [installFeedback, setInstallFeedback] = useState<string | null>(null);
 
   const [loanDays, setLoanDays] = useState(String(settings.loan_default_days ?? 7));
@@ -194,7 +216,23 @@ export function ConfiguracoesPage({
 
   const [appName, setAppName] = useState(settings.app_name);
   const [orgName, setOrgName] = useState(settings.org_name);
+  const [orgSubtitle, setOrgSubtitle] = useState(settings.org_subtitle ?? "");
+  const [orgDocument, setOrgDocument] = useState(settings.org_document ?? "");
+  const [orgContact, setOrgContact] = useState(settings.org_contact ?? "");
+  const [loanTermFooter, setLoanTermFooter] = useState(settings.loan_term_footer ?? "");
   const [logoDataUrl, setLogoDataUrl] = useState(settings.logo_data_url);
+  const [logoEditorSource, setLogoEditorSource] = useState<File | string | null>(null);
+
+  useEffect(() => {
+    setLoanDays(String(settings.loan_default_days ?? 7));
+    setAppName(settings.app_name);
+    setOrgName(settings.org_name);
+    setOrgSubtitle(settings.org_subtitle ?? "");
+    setOrgDocument(settings.org_document ?? "");
+    setOrgContact(settings.org_contact ?? "");
+    setLoanTermFooter(settings.loan_term_footer ?? "");
+    setLogoDataUrl(settings.logo_data_url);
+  }, [settings]);
   const [orgSaving, setOrgSaving] = useState(false);
   const [orgMessage, setOrgMessage] = useState<string | null>(null);
   const [orgError, setOrgError] = useState<string | null>(null);
@@ -202,7 +240,6 @@ export function ConfiguracoesPage({
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [showPasswords, setShowPasswords] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -236,22 +273,9 @@ export function ConfiguracoesPage({
   const handleLogoFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     setOrgError(null);
     const file = e.target.files?.[0];
+    e.target.value = "";
     if (!file) return;
-    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
-      setOrgError("Selecione uma imagem PNG, JPEG ou WebP.");
-      return;
-    }
-    if (file.size > 450 * 1024) {
-      setOrgError("A imagem deve ter no máximo 450 KB.");
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        setLogoDataUrl(reader.result);
-      }
-    };
-    reader.readAsDataURL(file);
+    setLogoEditorSource(file);
   };
 
   const handleOrgSubmit = async (e: FormEvent<HTMLFormElement>) => {
@@ -265,6 +289,10 @@ export function ConfiguracoesPage({
         body: JSON.stringify({
           app_name: appName.trim(),
           org_name: orgName.trim(),
+          org_subtitle: orgSubtitle.trim(),
+          org_document: orgDocument.trim(),
+          org_contact: orgContact.trim(),
+          loan_term_footer: loanTermFooter.trim(),
           logo_data_url: logoDataUrl
         })
       });
@@ -284,6 +312,10 @@ export function ConfiguracoesPage({
 
     if (newPassword.length < 8) {
       setError("A nova senha deve ter no mínimo 8 caracteres.");
+      return;
+    }
+    if (newPassword === currentPassword) {
+      setError("A nova senha deve ser diferente da senha atual.");
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -345,7 +377,7 @@ export function ConfiguracoesPage({
           aria-label="Seções de configurações"
           className={`lg:col-span-3 tw-card p-2.5 space-y-3 ${mobileShowSection ? "hidden lg:block" : ""}`}
         >
-          {NAV_GROUPS.map((group) => (
+          {visibleGroups.map((group) => (
             <div key={group.label} className="space-y-1">
               <div className="px-3 pt-1 text-[11px] font-bold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
                 {group.label}
@@ -384,7 +416,8 @@ export function ConfiguracoesPage({
           ))}
         </nav>
 
-        <section className={`lg:col-span-9 tw-card p-5 sm:p-6 space-y-6 ${mobileShowSection ? "" : "hidden lg:block"}`}>
+        <section className={`lg:col-span-9 tw-card p-5 sm:p-6 ${mobileShowSection ? "" : "hidden lg:block"}`}>
+          <div key={subTab} className="tw-page-enter space-y-6">
           <button type="button" className="tw-btn tw-btn-sm lg:hidden" onClick={() => setMobileShowSection(false)}>
             <ArrowLeft className="w-3.5 h-3.5" aria-hidden="true" /> Configurações
           </button>
@@ -393,22 +426,34 @@ export function ConfiguracoesPage({
             <div className="border-b pb-3" style={{ borderColor: "var(--border)" }}>
               <h2 className="text-base font-semibold">{current.label}</h2>
               <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
+                {subTab === "aparencia" && "Paleta de cores da organização e imagem de fundo aplicadas em todo o sistema."}
                 {subTab === "cadastros" && "Setores de destino e locais de instalação usados nas movimentações."}
                 {subTab === "regras" && "Regras aplicadas automaticamente nas novas movimentações."}
-                {subTab === "equipe" && "Contas da equipe de TI. Todos têm o mesmo nível de acesso."}
+                {subTab === "equipe" && "Contas da equipe de TI. Administradores gerenciam equipe, organização, regras e backup."}
                 {subTab === "sincronizacao" && "O que foi feito sem internet e ainda não chegou ao servidor, ou que o servidor recusou."}
                 {subTab === "auditoria" && "Registro de tudo o que foi feito no sistema, por quem e quando."}
                 {subTab === "exportar" && "Planilhas para análise e cópia de segurança do banco de dados."}
+                {subTab === "sobre" && "Versão, informações da organização e resumo do dispositivo."}
               </p>
             </div>
           )}
 
-          {subTab === "cadastros" && (
-            <CadastrosPanel sectors={sectors} locations={locations} suggestions={suggestions} onCreateSector={onCreateSector} onRefresh={onRefresh} />
+          {subTab === "aparencia" && isAdmin && (
+            <AppearancePanel
+              settings={settings}
+              online={online}
+              onPreviewChange={onPreviewAppearance}
+              onSaved={onSettingsUpdated}
+            />
           )}
 
-          {subTab === "regras" && (
+          {subTab === "cadastros" && (
+            <CadastrosPanel sectors={sectors} locations={locations} suggestions={suggestions} online={online} onCreateSector={onCreateSector} onRefresh={onRefresh} />
+          )}
+
+          {subTab === "regras" && isAdmin && (
             <form onSubmit={handleRulesSubmit} className="space-y-4 max-w-xl">
+              {!online && <OnlineOnlyNotice />}
               <div>
                 <label htmlFor="rule-days" className="tw-label">Prazo padrão de devolução dos empréstimos (dias)</label>
                 <input id="rule-days" type="number" min={0} max={365} required value={loanDays} onChange={(e) => setLoanDays(e.target.value)} className="tw-input" style={{ maxWidth: "10rem" }} />
@@ -426,11 +471,11 @@ export function ConfiguracoesPage({
                   {rulesMessage.text}
                 </p>
               )}
-              <button type="submit" className="tw-btn tw-btn-primary" disabled={rulesSaving}>{rulesSaving ? "Salvando..." : "Salvar regra"}</button>
+              <button type="submit" className="tw-btn tw-btn-primary" disabled={!online || rulesSaving}>{rulesSaving ? "Salvando..." : "Salvar regra"}</button>
             </form>
           )}
 
-          {subTab === "equipe" && <UsuariosPage users={users} currentUser={user} onRefresh={onRefresh} />}
+          {subTab === "equipe" && isAdmin && <UsuariosPage users={users} currentUser={user} online={online} onRefresh={onRefresh} />}
 
           {subTab === "sincronizacao" && (
             <SyncPanel
@@ -444,9 +489,31 @@ export function ConfiguracoesPage({
             />
           )}
 
-          {subTab === "auditoria" && <AuditPanel users={users} />}
+          {subTab === "auditoria" && <AuditPanel users={users} online={online} />}
 
-          {subTab === "exportar" && <ExportPanel equipments={equipments} movements={movements} />}
+          {subTab === "exportar" && (
+            <ExportPanel
+              equipments={equipments}
+              movements={movements}
+              online={online}
+              canBackup={isAdmin}
+              onBackupRestored={onBackupRestored}
+            />
+          )}
+
+          {subTab === "sobre" && (
+            <SobrePanel
+              user={user}
+              settings={settings}
+              online={online}
+              counts={{
+                equipments: equipments.length,
+                movements: movements.length,
+                sectors: sectors.length,
+                locations: locations.length
+              }}
+            />
+          )}
           {subTab === "conta" && (
             <div className="space-y-6">
               <div className="border-b pb-3" style={{ borderColor: "var(--border)" }}>
@@ -483,67 +550,78 @@ export function ConfiguracoesPage({
                 )}
               </div>
 
-              <form onSubmit={handlePasswordSubmit} className="space-y-4 max-w-xl">
-                <h3 className="text-sm font-semibold">Alterar senha</h3>
+              <form onSubmit={handlePasswordSubmit} className="tw-card p-4 sm:p-5 space-y-4 max-w-xl" style={{ backgroundColor: "var(--bg)" }}>
+                <div className="space-y-1">
+                  <h3 className="text-sm font-semibold">Alterar senha</h3>
+                  <p id="cfg-pass-hint" className="text-xs flex items-start gap-1.5" style={{ color: "var(--text-muted)" }}>
+                    <Lock className="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden="true" />
+                    <span>
+                      Mínimo de 8 caracteres. Sua senha é protegida por criptografia irreversível e nunca fica visível.
+                    </span>
+                  </p>
+                </div>
+                {!online && <OnlineOnlyNotice text="Você está offline. Alterar senha ou encerrar sessões exige conexão." />}
 
                 <div>
-                  <label htmlFor="cfg-cur-pass" className="block text-xs font-medium mb-1">
-                    Senha atual
+                  <label htmlFor="cfg-cur-pass" className="tw-label">
+                    Senha atual <span aria-hidden="true">*</span>
                   </label>
                   <input
                     id="cfg-cur-pass"
-                    type={showPasswords ? "text" : "password"}
+                    type="password"
                     autoComplete="current-password"
                     required
                     value={currentPassword}
-                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    onChange={(e) => {
+                      setCurrentPassword(e.target.value);
+                      if (error) setError(null);
+                      if (success) setSuccess(null);
+                    }}
                     className="tw-input"
                   />
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
-                    <label htmlFor="cfg-new-pass" className="block text-xs font-medium mb-1">
-                      Nova senha (mín. 8 caracteres)
+                    <label htmlFor="cfg-new-pass" className="tw-label">
+                      Nova senha <span aria-hidden="true">*</span>
                     </label>
                     <input
                       id="cfg-new-pass"
-                      type={showPasswords ? "text" : "password"}
+                      type="password"
+                      aria-describedby="cfg-pass-hint"
                       autoComplete="new-password"
                       minLength={8}
                       required
                       value={newPassword}
-                      onChange={(e) => setNewPassword(e.target.value)}
+                      onChange={(e) => {
+                        setNewPassword(e.target.value);
+                        if (error) setError(null);
+                        if (success) setSuccess(null);
+                      }}
                       className="tw-input"
                     />
                   </div>
                   <div>
-                    <label htmlFor="cfg-confirm-pass" className="block text-xs font-medium mb-1">
-                      Confirmar nova senha
+                    <label htmlFor="cfg-confirm-pass" className="tw-label">
+                      Confirmar nova senha <span aria-hidden="true">*</span>
                     </label>
                     <input
                       id="cfg-confirm-pass"
-                      type={showPasswords ? "text" : "password"}
+                      type="password"
                       autoComplete="new-password"
                       minLength={8}
                       required
                       value={confirmPassword}
-                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      onChange={(e) => {
+                        setConfirmPassword(e.target.value);
+                        if (error) setError(null);
+                        if (success) setSuccess(null);
+                      }}
                       className="tw-input"
                     />
                   </div>
                 </div>
-
-                <button
-                  type="button"
-                  aria-pressed={showPasswords}
-                  onClick={() => setShowPasswords((v) => !v)}
-                  className="flex items-center gap-1.5 text-xs font-medium cursor-pointer"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  {showPasswords ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                  <span>{showPasswords ? "Ocultar senhas" : "Mostrar senhas"}</span>
-                </button>
 
                 {error && (
                   <div
@@ -575,9 +653,8 @@ export function ConfiguracoesPage({
 
                 <button
                   type="submit"
-                  disabled={saving}
-                  className="min-h-[44px] px-5 rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-60"
-                  style={{ backgroundColor: "var(--brand)", color: "var(--brand-fg)" }}
+                  disabled={!online || saving}
+                  className="tw-btn tw-btn-primary"
                 >
                   {saving ? "Salvando..." : "Atualizar senha"}
                 </button>
@@ -589,14 +666,14 @@ export function ConfiguracoesPage({
                   Se você esqueceu o sistema aberto em outro computador ou celular, encerre todas as sessões. Você precisará
                   entrar de novo em todos os dispositivos, inclusive neste.
                 </p>
-                <button type="button" className="tw-btn tw-btn-danger" disabled={logoutAllBusy} onClick={() => void handleLogoutAll()}>
+                <button type="button" className="tw-btn tw-btn-danger" disabled={!online || logoutAllBusy} onClick={() => void handleLogoutAll()}>
                   <LogOut className="w-4 h-4" aria-hidden="true" /> Sair de todos os dispositivos
                 </button>
               </section>
             </div>
           )}
 
-          {subTab === "organizacao" && (
+          {subTab === "organizacao" && isAdmin && (
             <div className="space-y-6">
               <div className="border-b pb-3" style={{ borderColor: "var(--border)" }}>
                 <h2 className="text-base font-semibold">Organização</h2>
@@ -604,11 +681,12 @@ export function ConfiguracoesPage({
                   Identificação exibida na barra superior, tela de login e relatórios em PDF.
                 </p>
               </div>
+              {!online && <OnlineOnlyNotice />}
 
               <form onSubmit={handleOrgSubmit} className="space-y-5 max-w-2xl">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label htmlFor="org-appname" className="block text-xs font-medium mb-1">
+                    <label htmlFor="org-appname" className="tw-label">
                       Nome do sistema
                     </label>
                     <input
@@ -620,7 +698,7 @@ export function ConfiguracoesPage({
                     />
                   </div>
                   <div>
-                    <label htmlFor="org-name" className="block text-xs font-medium mb-1">
+                    <label htmlFor="org-name" className="tw-label">
                       Nome da organização / setor
                     </label>
                     <input
@@ -631,6 +709,54 @@ export function ConfiguracoesPage({
                       className="tw-input"
                     />
                   </div>
+                  <div>
+                    <label htmlFor="org-subtitle" className="tw-label">
+                      Unidade / departamento (opcional)
+                    </label>
+                    <input
+                      id="org-subtitle"
+                      value={orgSubtitle}
+                      onChange={(e) => setOrgSubtitle(e.target.value)}
+                      placeholder="Ex.: Campus Recife · Bloco B"
+                      className="tw-input"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="org-doc" className="tw-label">
+                      CNPJ ou código institucional (opcional)
+                    </label>
+                    <input
+                      id="org-doc"
+                      value={orgDocument}
+                      onChange={(e) => setOrgDocument(e.target.value)}
+                      placeholder="Ex.: 00.000.000/0001-00"
+                      className="tw-input"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label htmlFor="org-contact" className="tw-label">
+                      Contato / suporte do TI (opcional)
+                    </label>
+                    <input
+                      id="org-contact"
+                      value={orgContact}
+                      onChange={(e) => setOrgContact(e.target.value)}
+                      placeholder="Ex.: suporte@empresa.com · Ramal 4100"
+                      className="tw-input"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label htmlFor="org-term" className="tw-label">
+                      Observação extra nos termos em PDF (opcional)
+                    </label>
+                    <textarea
+                      id="org-term"
+                      value={loanTermFooter}
+                      onChange={(e) => setLoanTermFooter(e.target.value)}
+                      placeholder="Ex.: Devolver na sala da TI B-12 de segunda a sexta, das 8h às 17h."
+                      className="tw-textarea"
+                    />
+                  </div>
                 </div>
 
                 <div
@@ -638,12 +764,12 @@ export function ConfiguracoesPage({
                   style={{ backgroundColor: "var(--bg)", borderColor: "var(--border)" }}
                 >
                   <div>
-                    <span className="block text-xs font-semibold">Logotipo personalizado</span>
+                    <span className="block text-xs font-semibold">Logotipo personalizado (também usado como favicon na guia)</span>
                     <span className="text-xs" style={{ color: "var(--text-muted)" }}>
-                      Formatos aceitos: PNG, JPEG ou WebP (até 450 KB).
+                      Exibido no cabeçalho, na aba do navegador, no login e nos PDFs. Aceita qualquer imagem compatível e converte para WebP/PNG após o recorte.
                     </span>
                   </div>
-                  <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex flex-wrap items-center gap-2.5">
                     <div className="bg-white rounded-lg p-2.5 border border-slate-200">
                       <img
                         src={logoDataUrl || "/logo.svg"}
@@ -656,23 +782,40 @@ export function ConfiguracoesPage({
                       style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
                     >
                       <Upload className="w-3.5 h-3.5" aria-hidden="true" />
-                      <span>Enviar logo</span>
+                      <span>Enviar e recortar</span>
                       <input
                         type="file"
-                        accept="image/png,image/jpeg,image/webp"
+                        accept="image/*"
                         onChange={handleLogoFileChange}
                         className="sr-only"
                       />
                     </label>
                     {logoDataUrl && (
-                      <button
-                        type="button"
-                        onClick={() => setLogoDataUrl("")}
-                        className="min-h-[44px] px-4 py-2 rounded-lg text-xs border cursor-pointer"
-                        style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-                      >
-                        Remover logo (usar padrão)
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setLogoEditorSource(logoDataUrl)}
+                          className="tw-btn"
+                        >
+                          <Crop className="w-3.5 h-3.5" aria-hidden="true" />
+                          Editar / recortar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => downloadDataUrl(logoDataUrl, "logo-organizacao")}
+                          className="tw-btn"
+                        >
+                          <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                          Baixar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setLogoDataUrl("")}
+                          className="tw-btn tw-btn-danger"
+                        >
+                          Remover logo
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -707,7 +850,7 @@ export function ConfiguracoesPage({
 
                 <button
                   type="submit"
-                  disabled={orgSaving}
+                  disabled={!online || orgSaving}
                   className="min-h-[44px] px-5 rounded-lg text-sm font-semibold cursor-pointer disabled:opacity-60"
                   style={{ backgroundColor: "var(--brand)", color: "var(--brand-fg)" }}
                 >
@@ -903,8 +1046,22 @@ export function ConfiguracoesPage({
               </div>
             </div>
           )}
+          </div>
         </section>
       </div>
+
+      <ImageEditorModal
+        source={logoEditorSource}
+        mode="logo"
+        maxDimension={512}
+        maxDataUrlLength={740_000}
+        defaultFilename="logo-organizacao"
+        onCancel={() => setLogoEditorSource(null)}
+        onApply={(dataUrl) => {
+          setLogoDataUrl(dataUrl);
+          setLogoEditorSource(null);
+        }}
+      />
     </div>
   );
 }

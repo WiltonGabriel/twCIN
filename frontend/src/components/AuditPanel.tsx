@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { apiRequest } from "../services/api";
 import type { AuditLogItem, TiUser } from "../types";
 import { formatDateTime } from "../types/labels";
+import { OnlineOnlyNotice } from "./OnlineOnlyNotice";
 
 const ENTITY_LABELS: Record<string, string> = {
   movement: "Movimentação",
@@ -27,7 +28,8 @@ const ACTION_LABELS: Record<string, string> = {
   PASSWORD_CHANGE: "Troca de senha",
   SESSION_REVOKED: "Sessões encerradas",
   SYNC_CONFLICT: "Conflito de sincronização",
-  BACKUP: "Backup"
+  BACKUP: "Backup",
+  RESTORE: "Restauração de backup"
 };
 
 interface Filters {
@@ -42,7 +44,7 @@ interface Filters {
 const EMPTY: Filters = { q: "", entity: "", action: "", user_id: "", from: "", to: "" };
 
 /** Trilha de auditoria completa, com filtros e paginação (antes só os últimos 250 por tela). */
-export function AuditPanel({ users }: { users: TiUser[] }) {
+export function AuditPanel({ users, online }: { users: TiUser[]; online: boolean }) {
   const [filters, setFilters] = useState<Filters>(EMPTY);
   const [applied, setApplied] = useState<Filters>(EMPTY);
   const [items, setItems] = useState<AuditLogItem[]>([]);
@@ -83,6 +85,7 @@ export function AuditPanel({ users }: { users: TiUser[] }) {
 
   return (
     <div className="space-y-4">
+      {!online && <OnlineOnlyNotice text="Você está offline. Consultar a trilha de auditoria exige conexão." />}
       <form onSubmit={submit} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         <div className="sm:col-span-2 lg:col-span-3 relative">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--text-muted)" }} aria-hidden="true" />
@@ -109,7 +112,7 @@ export function AuditPanel({ users }: { users: TiUser[] }) {
           <input id="audit-to" type="date" value={filters.to} onChange={(e) => set("to", e.target.value)} className="tw-input" />
         </div>
         <div className="flex items-end gap-2">
-          <button type="submit" className="tw-btn tw-btn-primary">Filtrar</button>
+          <button type="submit" disabled={!online} className="tw-btn tw-btn-primary">Filtrar</button>
           <button type="button" className="tw-btn" onClick={() => { setFilters(EMPTY); setApplied(EMPTY); }}>Limpar</button>
         </div>
       </form>

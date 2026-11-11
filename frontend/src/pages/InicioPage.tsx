@@ -1,5 +1,5 @@
 import { AlertTriangle, ArrowRight, Check, Package, Printer, Search, Wrench } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { PageIntro } from "../components/PageIntro";
 import type { CatalogEquipment, MovementItem, PageKey } from "../types";
 import {
@@ -12,7 +12,8 @@ import {
   movementStatusLabel,
   movementStatusStyle
 } from "../types/labels";
-import { GraficosPage } from "./GraficosPage";
+
+const GraficosPage = lazy(() => import("./GraficosPage").then((m) => ({ default: m.GraficosPage })));
 
 interface InicioPageProps {
   equipments: CatalogEquipment[];
@@ -67,8 +68,14 @@ export function InicioPage({
 
   const q = search.trim().toLowerCase();
   const matchedEquipments = q
-    ? activeEquipments
-        .filter((e) => [e.name, e.patrimony || "", e.category, e.received_from].join(" ").toLowerCase().includes(q))
+    ? equipments
+        .filter((e) => e.active === 1 || e.condition_status === "devolvido_dono")
+        .filter((e) =>
+          [e.name, e.patrimony || "", e.category, e.origin, e.received_from, e.owner_received_by || "", e.reason]
+            .join(" ")
+            .toLowerCase()
+            .includes(q)
+        )
         .slice(0, 8)
     : [];
   const matchedMovements = q
@@ -115,7 +122,13 @@ export function InicioPage({
         <div className="text-xs" style={{ color: isOverdue(m) ? "var(--cin-red)" : "var(--text-muted)" }}>
           {m.sector_name}
           {m.received_by ? ` · ${m.received_by}` : ""}
-          {m.due_at ? (isOverdue(m) ? ` · ${daysOverdue(m)} dia(s) de atraso` : ` · até ${formatDate(m.due_at)}`) : ""}
+          {m.due_at
+            ? isOverdue(m)
+              ? daysOverdue(m) > 0
+                ? ` · ${daysOverdue(m)} dia(s) de atraso`
+                : " · Vencido hoje"
+              : ` · até ${formatDate(m.due_at)}`
+            : ""}
         </div>
       </div>
       <div className="flex gap-1.5 shrink-0">
@@ -159,7 +172,9 @@ export function InicioPage({
       />
 
       {view === "indicadores" ? (
-        <GraficosPage equipments={equipments} movements={movements} />
+        <Suspense fallback={<p className="text-sm" style={{ color: "var(--text-muted)" }}>Carregando indicadores...</p>}>
+          <GraficosPage equipments={equipments} movements={movements} />
+        </Suspense>
       ) : (
         <>
           <div className="relative">
@@ -191,11 +206,19 @@ export function InicioPage({
                   <ul className="space-y-1.5">
                     {matchedEquipments.map((e) => (
                       <li key={e.client_uuid} className="tw-card px-3 py-2 flex items-center justify-between gap-2" style={{ backgroundColor: "var(--bg)" }}>
-                        <span className="text-sm">
+                        <span className="text-sm min-w-0">
                           <strong>{e.name}</strong>
                           {e.patrimony && <span className="font-mono text-xs ml-1.5" style={{ color: "var(--text-muted)" }}>{e.patrimony}</span>}
+                          {(e.origin || e.condition_status === "devolvido_dono") && (
+                            <span className="block text-xs" style={{ color: "var(--text-muted)" }}>
+                              {e.origin ? `Origem: ${e.origin}` : ""}
+                              {e.condition_status === "devolvido_dono"
+                                ? `${e.origin ? " · " : ""}Devolvido ao dono em ${formatDateTime(e.owner_returned_at)}${e.owner_received_by ? ` (${e.owner_received_by})` : ""}`
+                                : ""}
+                            </span>
+                          )}
                         </span>
-                        <span className="tw-badge" style={conditionStyle(e.condition_status)}>{CONDITION_LABELS[e.condition_status]}</span>
+                        <span className="tw-badge shrink-0" style={conditionStyle(e.condition_status)}>{CONDITION_LABELS[e.condition_status]}</span>
                       </li>
                     ))}
                   </ul>

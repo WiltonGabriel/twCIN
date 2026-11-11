@@ -1,7 +1,10 @@
+export type UserRole = "admin" | "tecnico";
+
 export interface AuthUser {
   id: number;
   username: string;
   full_name: string;
+  role?: UserRole;
   must_change_password: boolean;
   last_login_at: string | null;
 }
@@ -10,6 +13,7 @@ export interface TiUser {
   id: number;
   full_name: string;
   username: string;
+  role?: UserRole;
   active: number;
   must_change_password: number;
   last_login_at: string | null;
@@ -36,8 +40,10 @@ export interface CatalogEquipment {
   category: string;
   ownership_type: EquipmentOwnership;
   condition_status: EquipmentCondition;
+  origin_sector_id?: number | null;
   origin: string;
   received_from: string;
+  received_at?: string | null;
   reason: string;
   notes: string;
   active: number;
@@ -125,10 +131,20 @@ export interface AuditLogItem {
 export interface PublicSettings {
   app_name: string;
   org_name: string;
+  org_subtitle?: string;
+  org_document?: string;
+  org_contact?: string;
+  loan_term_footer?: string;
   logo_data_url: string;
   /** Prazo padrão de devolução dos empréstimos, em dias. 0 = sem prazo. */
   loan_default_days?: number;
+  theme_preset?: string;
+  brand_color?: string;
+  accent_color?: string;
+  bg_color?: string;
+  bg_image_data_url?: string;
+  bg_overlay_opacity?: number;
 }
 
 export type ThemePreference = "system" | "light" | "dark";
-export type PageKey = "inicio" | "equipamentos" | "movimentacoes" | "configuracoes";
+export type PageKey = "inicio" | "equipamentos" | "movimentacoes" | "setores" | "configuracoes";
