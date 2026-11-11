@@ -4,8 +4,8 @@
 
 | Versão | Suporte de segurança |
 | :--- | :--- |
-| `1.0.x` | Suportada |
-| `< 1.0.0` | Sem suporte |
+| `1.1.x` | Suportada |
+| `< 1.1.0` | Atualizar para `1.1.x` |
 
 ## Como reportar uma vulnerabilidade
 

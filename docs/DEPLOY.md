@@ -100,8 +100,8 @@ powershell -ExecutionPolicy Bypass -File .\instalar-servico.ps1
 Baixe **`twcin-vX.Y.Z-linux-x64.tar.gz`** nos Releases e extraia:
 
 ```bash
-tar -xzf twcin-v1.0.0-linux-x64.tar.gz
-cd twcin-v1.0.0-linux-x64
+tar -xzf twcin-vX.Y.Z-linux-x64.tar.gz
+cd twcin-vX.Y.Z-linux-x64
 ```
 
 - **Teste rápido:** `./iniciar-twcin.sh` (usa a próxima porta livre automaticamente se `3333` estiver em uso; encerre com `Ctrl + C`).
