@@ -25,19 +25,19 @@
   --brand-soft-light: rgba(0, 45, 107, 0.1);
   --brand-soft-dark: rgba(79, 141, 245, 0.16);
 
-  --cin-red-light: #c81018;
+  --cin-red-light: #b01018;
   --cin-red-dark: #f25f66;
-  --cin-red-soft-light: rgba(200, 16, 24, 0.1);
+  --cin-red-soft-light: rgba(176, 16, 24, 0.1);
   --cin-red-soft-dark: rgba(242, 95, 102, 0.16);
 
-  --ok-light: #15803d;
+  --ok-light: #166534;
   --ok-dark: #4ade80;
-  --ok-soft-light: rgba(21, 128, 61, 0.11);
+  --ok-soft-light: rgba(22, 101, 52, 0.11);
   --ok-soft-dark: rgba(74, 222, 128, 0.16);
 
-  --warn-light: #b45309;
+  --warn-light: #92400e;
   --warn-dark: #fbbf24;
-  --warn-soft-light: rgba(180, 83, 9, 0.11);
+  --warn-soft-light: rgba(146, 64, 14, 0.11);
   --warn-soft-dark: rgba(251, 191, 36, 0.16);
 
   /* Fallback light defaults */

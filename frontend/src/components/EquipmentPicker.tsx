@@ -133,6 +133,8 @@ export function EquipmentPicker({ id, equipments, movements, value, onChange, ed
         <input
           id={inputId}
           type="search"
+          role="combobox"
+          aria-autocomplete="list"
           autoComplete="off"
           value={query}
           onChange={(e) => {
@@ -143,65 +145,68 @@ export function EquipmentPicker({ id, equipments, movements, value, onChange, ed
           placeholder="Buscar por nome, patrimônio ou categoria"
           className="tw-input"
           style={{ paddingLeft: "2.25rem" }}
-          aria-controls={`${inputId}-list`}
+          aria-expanded={open}
+          aria-controls={open ? `${inputId}-list` : undefined}
         />
       </div>
       {open && (
-        <ul
-          id={`${inputId}-list`}
-          role="listbox"
-          className="tw-card max-h-64 overflow-auto divide-y"
-          style={{ borderColor: "var(--border)" }}
-        >
-          {results.map((eq) => {
-            const reason = unavailableReason(eq);
-            return (
-              <li key={eq.client_uuid} role="option" aria-selected={eq.id === value.equipment_id} aria-disabled={Boolean(reason)}>
-                <button
-                  type="button"
-                  disabled={Boolean(reason)}
-                  onClick={() => choose(eq)}
-                  className="w-full text-left px-3 py-2 flex items-center justify-between gap-2 cursor-pointer disabled:cursor-not-allowed"
-                  style={{ opacity: reason ? 0.55 : 1, borderColor: "var(--border)" }}
-                >
-                  <span className="min-w-0">
-                    <span className="block text-sm font-medium truncate">{eq.name}</span>
-                    <span className="block text-xs truncate" style={{ color: "var(--text-muted)" }}>
-                      {[eq.patrimony, eq.category].filter(Boolean).join(" · ") || "Sem patrimônio"}
-                      {reason ? ` — ${reason}` : ""}
+        <div className="tw-card max-h-64 overflow-auto divide-y" style={{ borderColor: "var(--border)" }}>
+          <ul
+            id={`${inputId}-list`}
+            role="listbox"
+            aria-label="Equipamentos disponíveis"
+            className="divide-y"
+            style={{ borderColor: "var(--border)" }}
+          >
+            {results.map((eq) => {
+              const reason = unavailableReason(eq);
+              return (
+                <li key={eq.client_uuid} role="none">
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={eq.id === value.equipment_id}
+                    aria-disabled={Boolean(reason)}
+                    disabled={Boolean(reason)}
+                    onClick={() => choose(eq)}
+                    className="w-full text-left px-3 py-2 flex items-center justify-between gap-2 cursor-pointer disabled:cursor-not-allowed"
+                    style={{ opacity: reason ? 0.55 : 1, borderColor: "var(--border)" }}
+                  >
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium truncate">{eq.name}</span>
+                      <span className="block text-xs truncate" style={{ color: "var(--text-muted)" }}>
+                        {[eq.patrimony, eq.category].filter(Boolean).join(" · ") || "Sem patrimônio"}
+                        {reason ? ` — ${reason}` : ""}
+                      </span>
                     </span>
-                  </span>
-                  {eq.id === value.equipment_id ? (
-                    <Check className="w-4 h-4 shrink-0" style={{ color: "var(--ok)" }} aria-hidden="true" />
-                  ) : (
-                    <span className="tw-badge shrink-0" style={conditionStyle(eq.condition_status)}>
-                      {CONDITION_LABELS[eq.condition_status]}
-                    </span>
-                  )}
-                </button>
-              </li>
-            );
-          })}
+                    {eq.id === value.equipment_id ? (
+                      <Check className="w-4 h-4 shrink-0" style={{ color: "var(--ok)" }} aria-hidden="true" />
+                    ) : (
+                      <span className="tw-badge shrink-0" style={conditionStyle(eq.condition_status)}>
+                        {CONDITION_LABELS[eq.condition_status]}
+                      </span>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
           {results.length === 0 && (
-            <li className="px-3 py-2 text-xs" style={{ color: "var(--text-muted)" }}>
+            <p className="px-3 py-2 text-xs" style={{ color: "var(--text-muted)" }}>
               Nenhum equipamento do catálogo corresponde à busca.
-            </li>
+            </p>
           )}
           {query.trim() && (
-            <li>
-              <button type="button" onClick={useFreeText} className="w-full text-left px-3 py-2 text-sm cursor-pointer" style={{ color: "var(--brand)" }}>
-                Usar &ldquo;{query.trim()}&rdquo; como item fora do catálogo
-              </button>
-            </li>
+            <button type="button" onClick={useFreeText} className="w-full text-left px-3 py-2 text-sm cursor-pointer" style={{ color: "var(--brand)" }}>
+              Usar &ldquo;{query.trim()}&rdquo; como item fora do catálogo
+            </button>
           )}
           {value.equipment_name && (
-            <li>
-              <button type="button" onClick={() => setOpen(false)} className="w-full text-left px-3 py-2 text-xs cursor-pointer" style={{ color: "var(--text-muted)" }}>
-                Manter {value.equipment_name}
-              </button>
-            </li>
+            <button type="button" onClick={() => setOpen(false)} className="w-full text-left px-3 py-2 text-xs cursor-pointer" style={{ color: "var(--text-muted)" }}>
+              Manter {value.equipment_name}
+            </button>
           )}
-        </ul>
+        </div>
       )}
     </div>
   );

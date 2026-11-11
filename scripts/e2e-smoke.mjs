@@ -7,10 +7,16 @@ import { fileURLToPath } from "node:url";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serverEntry = path.join(rootDir, "backend", "dist", "server.js");
+const axeScriptPath = path.join(rootDir, "frontend", "node_modules", "axe-core", "axe.min.js");
 if (!fs.existsSync(serverEntry)) {
   console.error("Execute `npm run build` antes de rodar o teste E2E.");
   process.exit(1);
 }
+if (!fs.existsSync(axeScriptPath)) {
+  console.error("Execute `npm --prefix frontend install` para disponibilizar axe-core antes do E2E.");
+  process.exit(1);
+}
+const axeSource = fs.readFileSync(axeScriptPath, "utf8");
 
 function findChromeBinary() {
   const candidates = [
@@ -201,9 +207,13 @@ try {
 
     const poll = setInterval(() => {
       if (fs.existsSync(activePortFile)) {
-        const firstLine = fs.readFileSync(activePortFile, "utf8").split(/\r?\n/)[0]?.trim();
-        if (firstLine && Number(firstLine) > 0) {
-          finish(Number(firstLine));
+        try {
+          const firstLine = fs.readFileSync(activePortFile, "utf8").split(/\r?\n/)[0]?.trim();
+          if (firstLine && Number(firstLine) > 0) {
+            finish(Number(firstLine));
+          }
+        } catch {
+          // No Windows o Chrome pode manter o arquivo brevemente bloqueado (EBUSY) ao gravar.
         }
       }
     }, 80);
@@ -218,8 +228,42 @@ try {
   await cdp.connect();
   await cdp.send("Page.navigate", { url: baseUrl });
 
-  // 3. Setup inicial pela interface real no navegador
+  const runAxeAudit = async (screenLabel) => {
+    await cdp.waitFor(`(() => {
+      const page = document.querySelector('main > div');
+      return !page || getComputedStyle(page).opacity === '1';
+    })()`);
+    const injected = await cdp.eval(`Boolean(window.axe)`);
+    if (!injected) {
+      await cdp.eval(axeSource);
+    }
+    const result = await cdp.eval(`window.axe.run(document, {
+      runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] }
+    })`);
+    const blocking = (result.violations || []).filter(
+      (v) => v.impact === "critical" || v.impact === "serious"
+    );
+    if (blocking.length > 0) {
+      const details = blocking
+        .map(
+          (v) =>
+            `[${v.impact}] ${v.id}: ${v.help} (${v.nodes
+              .slice(0, 3)
+              .map((n) => n.target.join(" "))
+              .join(", ")})`
+        )
+        .join("\n  ");
+      throw new Error(`Violações de acessibilidade (axe-core) em ${screenLabel}:\n  ${details}`);
+    }
+    const other = (result.violations || []).filter(
+      (v) => v.impact !== "critical" && v.impact !== "serious"
+    );
+    console.log(`a11y [${screenLabel}]: 0 críticas/sérias (outras: ${other.length})`);
+  };
+
+  // 3. Setup inicial pela interface real no navegador + auditoria axe-core
   await cdp.waitFor(`document.querySelector('input[autocomplete="name"]')`);
+  await runAxeAudit("Setup Inicial");
   await cdp.eval(`(() => {
     const setVal = (el, val) => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
@@ -233,22 +277,48 @@ try {
   await new Promise((r) => setTimeout(r, 80));
   await cdp.eval(`document.querySelector('form button[type="submit"]').click()`);
 
-  // 4. Valida carregamento do AppShell após login + navegação para Equipamentos e Por Setor
+  // 4. Valida carregamento do AppShell após login + navegação e axe-core nas principais telas
   await cdp.waitFor(`document.body.innerText.includes('Admin E2E') && document.body.innerText.includes('Por Setor')`);
+  await runAxeAudit("Início");
+
   await cdp.eval(`Array.from(document.querySelectorAll('nav button')).find(b => b.textContent.includes('Equipamentos')).click()`);
   await cdp.waitFor(`document.body.innerText.includes('Devolvidos ao dono')`);
+  await runAxeAudit("Equipamentos");
+
+  await cdp.eval(`Array.from(document.querySelectorAll('nav button')).find(b => b.textContent.includes('Movimentações')).click()`);
+  await cdp.waitFor(`document.body.innerText.includes('Nova movimentação')`);
+  await runAxeAudit("Movimentações");
+
+  await cdp.eval(`Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Nova movimentação')).click()`);
+  await cdp.waitFor(`document.querySelector('dialog[open]')`);
+  await new Promise((r) => setTimeout(r, 250));
+  await runAxeAudit("Modal Nova Movimentação");
+  await cdp.eval(`document.querySelector('dialog[open] button[aria-label="Fechar"]').click()`);
+  await cdp.waitFor(`!document.querySelector('dialog[open]')`);
 
   await cdp.eval(`Array.from(document.querySelectorAll('nav button')).find(b => b.textContent.includes('Por Setor')).click()`);
   await cdp.waitFor(`document.body.innerText.includes('Por Setor (Dossiê)')`);
+  await runAxeAudit("Por Setor");
+
+  await cdp.eval(`Array.from(document.querySelectorAll('nav button')).find(b => b.textContent.includes('Configurações')).click()`);
+  await cdp.waitFor(`document.body.innerText.includes('Cadastros') && document.body.innerText.includes('Aparência')`);
+  await runAxeAudit("Configurações");
 
   assert.equal(cdp.errors.length, 0, `Erros JS inesperados no navegador: ${cdp.errors.join("; ")}`);
 
   // 5. Testa encerramento gracioso do servidor via SIGTERM (SQLite WAL fecha sem erro)
   server.kill("SIGTERM");
-  const exitCode = await new Promise((resolve) => {
-    server.once("exit", (code) => resolve(code));
+  const exitResult = await new Promise((resolve) => {
+    server.once("exit", (code, signal) => resolve({ code, signal }));
   });
-  assert.equal(exitCode, 0, "Servidor deve encerrar com código 0 no SIGTERM");
+  if (process.platform === "win32") {
+    assert.ok(
+      exitResult.code === 0 || exitResult.signal === "SIGTERM",
+      `Encerramento inesperado no Windows: code=${exitResult.code}, signal=${exitResult.signal}`
+    );
+  } else {
+    assert.equal(exitResult.code, 0, "Servidor deve encerrar com código 0 no SIGTERM");
+  }
   assert.ok(fs.existsSync(path.join(tmpDir, "twcin.db")), "Banco SQLite deve existir em DATA_DIR");
 
   console.log("E2E Browser + Produção (SERVE_FRONTEND=true + SIGTERM): OK");
@@ -256,5 +326,6 @@ try {
   try { cdp?.close(); } catch {}
   try { chrome?.kill("SIGKILL"); } catch {}
   try { if (server.exitCode === null) server.kill("SIGKILL"); } catch {}
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  await new Promise((r) => setTimeout(r, 250));
+  try { fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch {}
 }
