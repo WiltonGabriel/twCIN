@@ -150,4 +150,4 @@ twCIN/
 
 ## Mantenedores e licença
 
-Mantido por **Wilton Pereira** e **Thales**. Distribuído sob a [Licença MIT](LICENSE).
+Mantido por **Wilton Gabriel** e **Thales Marques**. Distribuído sob a [Licença MIT](LICENSE).
