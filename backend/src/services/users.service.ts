@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { withTransaction } from "../db/connection.js";
 import { writeAuditLog } from "../security/audit.js";
-import type { AuthUser } from "../security/auth.js";
+import type { AuthUser, UserRole } from "../security/auth.js";
 import { hashPassword } from "../security/password.js";
 import { BadRequestError, ConflictError, NotFoundError } from "./errors.js";
 
@@ -9,6 +9,7 @@ export interface PublicUserRow {
   id: number;
   full_name: string;
   username: string;
+  role: UserRole;
   active: number;
   must_change_password: number;
   last_login_at: string | null;
@@ -18,7 +19,7 @@ export interface PublicUserRow {
 }
 
 const PUBLIC_USER_COLUMNS =
-  "id, full_name, username, active, must_change_password, last_login_at, password_changed_at, created_at, updated_at";
+  "id, full_name, username, role, active, must_change_password, last_login_at, password_changed_at, created_at, updated_at";
 
 export function listUsers(db: DatabaseSync): PublicUserRow[] {
   return db
@@ -28,7 +29,7 @@ export function listUsers(db: DatabaseSync): PublicUserRow[] {
 
 export function createUser(
   db: DatabaseSync,
-  input: { full_name: string; username: string; password: string; must_change_password?: boolean },
+  input: { full_name: string; username: string; password: string; role?: UserRole; must_change_password?: boolean },
   actor: AuthUser,
   ipAddress: string
 ): PublicUserRow {
@@ -38,17 +39,19 @@ export function createUser(
     throw new ConflictError("Este login já está em uso.");
   }
 
+  const role: UserRole = input.role ?? "tecnico";
   const mustChange = input.must_change_password ?? true;
   const now = new Date().toISOString();
   return withTransaction(db, () => {
     const info = db.prepare(`
       INSERT INTO users (
-        full_name, username, password_hash, active, must_change_password, token_version, created_at, updated_at
-      ) VALUES (?, ?, ?, 1, ?, 1, ?, ?)
+        full_name, username, password_hash, active, role, must_change_password, token_version, created_at, updated_at
+      ) VALUES (?, ?, ?, 1, ?, ?, 1, ?, ?)
     `).run(
       input.full_name.trim(),
       normalizedUsername,
       hashPassword(input.password),
+      role,
       mustChange ? 1 : 0,
       now,
       now
@@ -80,6 +83,7 @@ export function updateUser(
     full_name?: string;
     username?: string;
     password?: string;
+    role?: UserRole;
     active?: boolean;
     must_change_password?: boolean;
   },
@@ -94,13 +98,22 @@ export function updateUser(
     throw new NotFoundError("Usuário não encontrado.");
   }
 
-  if (input.active === false) {
-    if (id === actor.id) {
-      throw new BadRequestError("Não é possível desativar o próprio usuário da sessão atual.");
-    }
-    const activeCount = db.prepare("SELECT COUNT(*) AS count FROM users WHERE active = 1").get() as { count: number };
-    if (activeCount.count <= 1 && current.active === 1) {
-      throw new BadRequestError("Deve permanecer ao menos um usuário ativo no sistema.");
+  if (input.active === false && id === actor.id) {
+    throw new BadRequestError("Não é possível desativar o próprio usuário da sessão atual.");
+  }
+  if (input.role === "tecnico" && id === actor.id && current.role === "admin") {
+    throw new BadRequestError("Não é possível remover o próprio perfil de administrador.");
+  }
+
+  const nextActive = input.active !== undefined ? (input.active ? 1 : 0) : current.active;
+  const nextRole: UserRole = input.role ?? current.role;
+  const leavingAdminPool = current.active === 1 && current.role === "admin" && (nextActive === 0 || nextRole !== "admin");
+  if (leavingAdminPool) {
+    const adminCount = db
+      .prepare("SELECT COUNT(*) AS count FROM users WHERE active = 1 AND role = 'admin'")
+      .get() as { count: number };
+    if (adminCount.count <= 1) {
+      throw new BadRequestError("Deve permanecer ao menos um administrador ativo no sistema.");
     }
   }
 
@@ -113,8 +126,8 @@ export function updateUser(
   }
 
   const passwordChanged = Boolean(input.password);
+  const roleChanged = nextRole !== current.role;
   const nextPasswordHash = input.password ? hashPassword(input.password) : current.password_hash;
-  const nextActive = input.active !== undefined ? (input.active ? 1 : 0) : current.active;
   const nextMustChange =
     input.must_change_password !== undefined
       ? input.must_change_password
@@ -122,7 +135,7 @@ export function updateUser(
         : 0
       : current.must_change_password;
 
-  const shouldBumpTokens = passwordChanged || input.active === false || nextMustChange === 1;
+  const shouldBumpTokens = passwordChanged || roleChanged || input.active === false || nextMustChange === 1;
   const nextTokenVersion = shouldBumpTokens ? current.token_version + 1 : current.token_version;
   const now = new Date().toISOString();
   const nextPasswordChangedAt = passwordChanged ? now : current.password_changed_at;
@@ -134,6 +147,7 @@ export function updateUser(
         username = ?,
         password_hash = ?,
         active = ?,
+        role = ?,
         must_change_password = ?,
         token_version = ?,
         password_changed_at = ?,
@@ -144,6 +158,7 @@ export function updateUser(
       nextUsername,
       nextPasswordHash,
       nextActive,
+      nextRole,
       nextMustChange,
       nextTokenVersion,
       nextPasswordChangedAt,
@@ -159,6 +174,7 @@ export function updateUser(
       id: current.id,
       full_name: current.full_name,
       username: current.username,
+      role: current.role,
       active: current.active,
       must_change_password: current.must_change_password
     };

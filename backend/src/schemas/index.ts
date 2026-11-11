@@ -21,20 +21,32 @@ export const setupSchema = z.object({
   org_name: z.string().trim().min(1).max(120).optional()
 });
 
+const imageDataUrl = (maxLength: number, sizeMessage: string) =>
+  z
+    .string()
+    .max(maxLength, sizeMessage)
+    .refine(
+      (val) => val === "" || /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(val),
+      "Formato de imagem inválido. Use PNG, JPEG ou WebP."
+    );
+
+const hexColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/, "Cor inválida. Use o formato #RRGGBB.");
+
 export const updateSettingsSchema = z.object({
   app_name: z.string().trim().min(1).max(60).optional(),
   org_name: z.string().trim().min(1).max(120).optional(),
-  logo_data_url: z
-    .string()
-    .max(750_000, "A imagem da logo excede o tamanho máximo permitido.")
-    .refine(
-      (val) =>
-        val === "" ||
-        /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(val),
-      "Formato de imagem inválido. Use PNG, JPEG ou WebP."
-    )
-    .optional(),
-  loan_default_days: z.number().int().min(0, "Prazo inválido.").max(365, "O prazo máximo é de 365 dias.").optional()
+  org_subtitle: z.string().trim().max(140).optional(),
+  org_document: z.string().trim().max(60).optional(),
+  org_contact: z.string().trim().max(160).optional(),
+  loan_term_footer: z.string().trim().max(300).optional(),
+  logo_data_url: imageDataUrl(750_000, "A imagem da logo excede o tamanho máximo permitido.").optional(),
+  loan_default_days: z.number().int().min(0, "Prazo inválido.").max(365, "O prazo máximo é de 365 dias.").optional(),
+  theme_preset: z.string().trim().min(1).max(32).optional(),
+  brand_color: hexColorSchema.optional(),
+  accent_color: hexColorSchema.optional(),
+  bg_color: z.union([z.literal(""), hexColorSchema]).optional(),
+  bg_image_data_url: imageDataUrl(2_100_000, "A imagem de fundo excede o tamanho máximo permitido (1,5 MB).").optional(),
+  bg_overlay_opacity: z.number().int().min(0).max(95).optional()
 });
 
 export const changePasswordSchema = z.object({
@@ -45,6 +57,8 @@ export const changePasswordSchema = z.object({
     .max(128)
 });
 
+export const userRoleEnum = z.enum(["admin", "tecnico"]);
+
 export const createUserSchema = z.object({
   full_name: z.string().trim().min(2).max(100),
   username: z
@@ -54,6 +68,7 @@ export const createUserSchema = z.object({
     .max(50)
     .regex(/^[a-zA-Z0-9._-]+$/, "Usuário deve conter apenas letras, números, ponto, hífen ou sublinhado."),
   password: passwordSchema,
+  role: userRoleEnum.optional().default("tecnico"),
   must_change_password: z.boolean().optional().default(true)
 });
 
@@ -67,6 +82,7 @@ export const updateUserSchema = z.object({
     .regex(/^[a-zA-Z0-9._-]+$/, "Usuário deve conter apenas letras, números, ponto, hífen ou sublinhado.")
     .optional(),
   password: passwordSchema.optional(),
+  role: userRoleEnum.optional(),
   active: z.boolean().optional(),
   must_change_password: z.boolean().optional()
 });
@@ -82,6 +98,7 @@ export const createMovementSchema = z.object({
   client_uuid: z.string().uuid().optional(),
   movement_type: movementTypeEnum.optional().default("emprestimo"),
   equipment_id: z.number().int().positive().nullable().optional(),
+  equipment_client_uuid: z.string().uuid().nullable().optional(),
   equipment_name: z.string().trim().min(1, "Informe o equipamento.").max(160),
   patrimony: z.string().trim().max(80).optional().default(""),
   sector_id: z.number().int().positive().nullable().optional(),
@@ -97,6 +114,7 @@ export const createMovementSchema = z.object({
 export const updateMovementSchema = z.object({
   movement_type: movementTypeEnum.optional(),
   equipment_id: z.number().int().positive().nullable().optional(),
+  equipment_client_uuid: z.string().uuid().nullable().optional(),
   equipment_name: z.string().trim().min(1).max(160).optional(),
   patrimony: z.string().trim().max(80).optional(),
   sector_id: z.number().int().positive().nullable().optional(),
@@ -142,8 +160,10 @@ export const createEquipmentSchema = z.object({
   category: z.string().trim().max(80).optional().default(""),
   ownership_type: equipmentOwnershipEnum.optional().default("proprio_ti"),
   condition_status: equipmentConditionEnum.optional().default("disponivel"),
+  origin_sector_id: z.number().int().positive().nullable().optional(),
   origin: z.string().trim().max(140).optional().default(""),
   received_from: z.string().trim().max(120).optional().default(""),
+  received_at: isoDateTime("Data/hora de recebimento inválida.").optional(),
   reason: z.string().trim().max(500).optional().default(""),
   notes: z.string().trim().max(1000).optional().default("")
 });
@@ -154,8 +174,10 @@ export const updateEquipmentSchema = z.object({
   category: z.string().trim().max(80).optional(),
   ownership_type: equipmentOwnershipEnum.optional(),
   condition_status: equipmentConditionEnum.optional(),
+  origin_sector_id: z.number().int().positive().nullable().optional(),
   origin: z.string().trim().max(140).optional(),
   received_from: z.string().trim().max(120).optional(),
+  received_at: isoDateTime("Data/hora de recebimento inválida.").optional(),
   reason: z.string().trim().max(500).optional(),
   notes: z.string().trim().max(1000).optional(),
   active: z.boolean().optional(),

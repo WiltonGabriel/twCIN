@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
 import type { EnvConfig } from "../src/config/env.js";
+import { runScheduledBackup } from "../src/services/backup.service.js";
 
 function createTestEnv(overrides?: Partial<EnvConfig>): EnvConfig {
   return {
@@ -506,11 +510,39 @@ describe("twCIN API", () => {
       headers: { cookie },
       payload: {
         app_name: "twCIN Custom",
-        org_name: "Minha Organização"
+        org_name: "Minha Organização",
+        org_subtitle: "Campus Central",
+        org_document: "00.000.000/0001-00",
+        org_contact: "ti@exemplo.com",
+        loan_term_footer: "Devolver na sala B-12.",
+        theme_preset: "custom",
+        brand_color: "#047857",
+        accent_color: "#0f766e",
+        bg_color: "#f0fdf7",
+        bg_overlay_opacity: 80
       }
     });
     assert.equal(pngValid.statusCode, 200);
     assert.equal(pngValid.json().settings.org_name, "Minha Organização");
+    assert.equal(pngValid.json().settings.org_subtitle, "Campus Central");
+    assert.equal(pngValid.json().settings.brand_color, "#047857");
+    assert.equal(pngValid.json().settings.bg_overlay_opacity, 80);
+
+    const invalidColor = await app.inject({
+      method: "PATCH",
+      url: "/api/settings",
+      headers: { cookie },
+      payload: { brand_color: "red" }
+    });
+    assert.equal(invalidColor.statusCode, 400);
+
+    const svgBgReject = await app.inject({
+      method: "PATCH",
+      url: "/api/settings",
+      headers: { cookie },
+      payload: { bg_image_data_url: "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" }
+    });
+    assert.equal(svgBgReject.statusCode, 400);
   });
 });
 
@@ -891,5 +923,343 @@ describe("twCIN API — correções da auditoria (fase 1)", () => {
       statuses.push(res.statusCode);
     }
     assert.ok(statuses.includes(429), `esperado 429, recebido ${statuses.join(",")}`);
+  });
+
+  it("resolve equipment_client_uuid no mesmo lote de sincronização offline", async () => {
+    await setup();
+    const eqUuid = crypto.randomUUID();
+    const movUuid = crypto.randomUUID();
+
+    const batch = await call("POST", "/api/sync", {
+      operations: [
+        {
+          op_id: "op-eq",
+          type: "equipment.create",
+          payload: { client_uuid: eqUuid, name: "Switch Offline", patrimony: "SW-OFF-1" }
+        },
+        {
+          op_id: "op-mov",
+          type: "movement.create",
+          payload: {
+            client_uuid: movUuid,
+            movement_type: "emprestimo",
+            equipment_id: null,
+            equipment_client_uuid: eqUuid,
+            equipment_name: "Switch Offline",
+            sector_name: "Redes",
+            install_location: "Rack B"
+          }
+        },
+        {
+          op_id: "op-bad",
+          type: "movement.create",
+          payload: {
+            equipment_id: null,
+            equipment_client_uuid: crypto.randomUUID(),
+            equipment_name: "Inexistente",
+            sector_name: "Redes",
+            install_location: "Rack B"
+          }
+        }
+      ]
+    });
+
+    assert.equal(batch.status, 200);
+    assert.deepEqual(
+      batch.body.results.map((r: { op_id: string; status: string }) => [r.op_id, r.status]),
+      [
+        ["op-eq", "applied"],
+        ["op-mov", "applied"],
+        ["op-bad", "error"]
+      ]
+    );
+    const createdEq = batch.body.results[0].record;
+    const createdMov = batch.body.results[1].record;
+    assert.equal(createdMov.equipment_id, createdEq.id);
+    assert.equal(createdMov.patrimony, "SW-OFF-1");
+    assert.equal(
+      batch.body.snapshot.catalog_equipments.find((e: { id: number }) => e.id === createdEq.id).condition_status,
+      "emprestado"
+    );
+  });
+
+  it("separa permissões de admin e tecnico e protege o último admin ativo", async () => {
+    await setup();
+
+    const me = await call("GET", "/api/auth/me");
+    assert.equal(me.body.user.role, "admin");
+
+    const createTech = await call("POST", "/api/users", {
+      full_name: "Técnico Campo",
+      username: "campo1",
+      password: "senha-campo-2026",
+      must_change_password: false
+    });
+    assert.equal(createTech.status, 201);
+    assert.equal(createTech.body.item.role, "tecnico");
+    const techId = createTech.body.item.id;
+
+    // Não pode rebaixar o único admin ativo (ou a si mesmo).
+    const selfDemote = await call("PATCH", `/api/users/${me.body.user.id}`, { role: "tecnico" });
+    assert.equal(selfDemote.status, 400);
+
+    const techLogin = await app!.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: "campo1", password: "senha-campo-2026" }
+    });
+    const techCookie = extractCookie(techLogin.headers["set-cookie"]);
+
+    // Técnico pode operar equipamentos e movimentações.
+    const eqRes = await app!.inject({
+      method: "POST",
+      url: "/api/catalogs/equipments",
+      headers: { cookie: techCookie },
+      payload: { name: "Cabo HDMI" }
+    });
+    assert.equal(eqRes.statusCode, 201);
+
+    // Técnico recebe 403 em rotas administrativas.
+    for (const [method, url, payload] of [
+      ["POST", "/api/users", { full_name: "X", username: "xuser", password: "password-123" }],
+      ["PATCH", `/api/users/${techId}`, { full_name: "Y" }],
+      ["POST", `/api/users/${techId}/revoke-sessions`, {}],
+      ["PATCH", "/api/settings", { org_name: "Outro" }],
+      ["POST", "/api/backup", { password: "senha-campo-2026" }]
+    ] as const) {
+      const blocked = await app!.inject({ method, url, headers: { cookie: techCookie }, payload });
+      assert.equal(blocked.statusCode, 403, `${method} ${url}`);
+    }
+  });
+
+  it("serve o frontend estático com fallback SPA quando serveFrontend=true", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "twcin-static-"));
+    try {
+      fs.mkdirSync(path.join(tmpDir, "assets"), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, "index.html"), "<!doctype html><html><body>SPA</body></html>");
+      fs.writeFileSync(path.join(tmpDir, "assets", "app.js"), "console.log(1);");
+
+      const built = await buildApp({
+        env: createTestEnv({ serveFrontend: true, frontendDistDir: tmpDir })
+      });
+      app = built.app;
+
+      const root = await app.inject({ method: "GET", url: "/" });
+      assert.equal(root.statusCode, 200);
+      assert.match(root.headers["content-type"] as string, /text\/html/);
+      assert.match(root.body, /SPA/);
+
+      const asset = await app.inject({ method: "GET", url: "/assets/app.js" });
+      assert.equal(asset.statusCode, 200);
+      assert.match(asset.headers["cache-control"] as string, /immutable/);
+
+      const spaFallback = await app.inject({ method: "GET", url: "/rota/qualquer" });
+      assert.equal(spaFallback.statusCode, 200);
+      assert.match(spaFallback.body, /SPA/);
+
+      const apiNotFound = await app.inject({ method: "GET", url: "/api/inexistente" });
+      assert.equal(apiNotFound.statusCode, 404);
+      assert.equal(apiNotFound.json().error, "Rota não encontrada.");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("exporta backup e restaura tudo tanto na configuração inicial quanto em instância ativa", async () => {
+    await setup();
+    await call("PATCH", "/api/settings", { org_name: "Empresa Backup", brand_color: "#047857" });
+    const eq = (await call("POST", "/api/catalogs/equipments", { name: "Router Backup", patrimony: "PAT-BK-1" })).body
+      .item;
+    await call("POST", "/api/movements", {
+      equipment_id: eq.id,
+      equipment_name: eq.name,
+      sector_name: "Redes",
+      install_location: "Rack 1"
+    });
+
+    const backupRes = await app!.inject({
+      method: "POST",
+      url: "/api/backup",
+      headers: { cookie },
+      payload: { password: "tecnico1-nova-senha-2026" }
+    });
+    assert.equal(backupRes.statusCode, 200);
+    const backupBase64 = backupRes.rawPayload.toString("base64");
+    await app!.close();
+    app = null;
+
+    // 1. Nova instância vazia: importa backup direto no setup inicial.
+    const freshBuilt = await buildApp({
+      env: createTestEnv({
+        seedAdminName: undefined,
+        seedAdminUsername: undefined,
+        seedAdminPassword: undefined
+      })
+    });
+    app = freshBuilt.app;
+
+    const statusBefore = await app.inject({ method: "GET", url: "/api/auth/status" });
+    assert.equal(statusBefore.json().needs_setup, true);
+
+    const badRestore = await app.inject({
+      method: "POST",
+      url: "/api/backup/restore-initial",
+      payload: { backup_base64: Buffer.from("arquivo invalido qualquer").toString("base64") }
+    });
+    assert.equal(badRestore.statusCode, 400);
+
+    const initRestore = await app.inject({
+      method: "POST",
+      url: "/api/backup/restore-initial",
+      payload: { backup_base64: backupBase64 }
+    });
+    assert.equal(initRestore.statusCode, 200);
+    assert.equal(initRestore.json().restored_equipments, 1);
+    assert.equal(initRestore.json().restored_movements, 1);
+
+    // Segundo restore-initial deve ser bloqueado (já há usuários).
+    const secondInitRestore = await app.inject({
+      method: "POST",
+      url: "/api/backup/restore-initial",
+      payload: { backup_base64: backupBase64 }
+    });
+    assert.equal(secondInitRestore.statusCode, 409);
+
+    const pubAfter = await app.inject({ method: "GET", url: "/api/settings/public" });
+    assert.equal(pubAfter.json().settings.org_name, "Empresa Backup");
+    assert.equal(pubAfter.json().settings.brand_color, "#047857");
+
+    // Login com o usuário restaurado e criação de nova movimentação preserva sequência MOV-0002.
+    const relogin = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: { username: "tecnico1", password: "tecnico1-nova-senha-2026" }
+    });
+    assert.equal(relogin.statusCode, 200);
+    cookie = extractCookie(relogin.headers["set-cookie"]);
+
+    const mov2 = await call("POST", "/api/movements", { ...baseMovement, equipment_name: "Cabo Novo" });
+    assert.equal(mov2.status, 201);
+    assert.equal(mov2.body.item.document_code, "MOV-0002");
+
+    // 2. Restauração autenticada sobrescreve os dados atuais com segurança.
+    const wrongPass = await call("POST", "/api/backup/restore", {
+      password: "errada",
+      backup_base64: backupBase64
+    });
+    assert.equal(wrongPass.status, 400);
+
+    const restoreActive = await call("POST", "/api/backup/restore", {
+      password: "tecnico1-nova-senha-2026",
+      backup_base64: backupBase64
+    });
+    assert.equal(restoreActive.status, 200);
+    const listAfter = await call("GET", "/api/movements?includeFinished=true");
+    assert.equal(listAfter.body.items.length, 1);
+  });
+
+  it("vincula setor de origem e data real de recebimento no equipamento e valida devolução ao dono", async () => {
+    await setup();
+
+    const sec = await call("POST", "/api/catalogs/sectors", { name: "Recursos Didáticos" });
+    assert.equal(sec.status, 201);
+    const sectorId = sec.body.item.id as number;
+
+    const receivedAt = "2026-10-15T14:30:00.000Z";
+    const eqRes = await call("POST", "/api/catalogs/equipments", {
+      name: "Projetor Sala 05",
+      ownership_type: "terceiro",
+      condition_status: "manutencao",
+      origin_sector_id: sectorId,
+      received_from: "Prof. João",
+      received_at: receivedAt,
+      reason: "Lâmpada fraca"
+    });
+    assert.equal(eqRes.status, 201);
+    const eq = eqRes.body.item;
+    assert.equal(eq.origin_sector_id, sectorId);
+    assert.equal(eq.origin, "Recursos Didáticos");
+    assert.equal(eq.received_at, receivedAt);
+
+    // Não permite devolução anterior à data de recebimento na TI.
+    const invalidReturn = await call("POST", `/api/catalogs/equipments/${eq.id}/return-to-owner`, {
+      received_by: "Prof. João",
+      returned_at: "2026-10-14T10:00:00.000Z"
+    });
+    assert.equal(invalidReturn.status, 400);
+
+    // Permite devolução após o recebimento real e mantém data/recebedor gravados.
+    const returnedAt = "2026-10-16T09:00:00.000Z";
+    const okReturn = await call("POST", `/api/catalogs/equipments/${eq.id}/return-to-owner`, {
+      received_by: "Prof. João",
+      returned_at: returnedAt,
+      notes: "Troca de cabo HDMI concluída"
+    });
+    assert.equal(okReturn.status, 200);
+    assert.equal(okReturn.body.item.condition_status, "devolvido_dono");
+    assert.equal(okReturn.body.item.owner_returned_at, returnedAt);
+    assert.equal(okReturn.body.item.owner_received_by, "Prof. João");
+
+    // Rejeita alteração retroativa de recebimento posterior à entrega ao dono.
+    const badPatch = await call("PATCH", `/api/catalogs/equipments/${eq.id}`, {
+      received_at: "2026-10-17T12:00:00.000Z"
+    });
+    assert.equal(badPatch.status, 400);
+  });
+
+  it("healthcheck retorna versão, CORS aceita mesma origem com SERVE_FRONTEND=true e backup automático rotaciona", async () => {
+    const tmpBackupDir = fs.mkdtempSync(path.join(os.tmpdir(), "twcin-autobackup-"));
+    try {
+      const built = await buildApp({
+        env: createTestEnv({
+          appVersion: "1.0.0-test",
+          serveFrontend: true
+        })
+      });
+      app = built.app;
+      const db = built.db;
+
+      const health = await app.inject({ method: "GET", url: "/api/health" });
+      assert.equal(health.statusCode, 200);
+      assert.equal(health.json().ok, true);
+      assert.equal(health.json().status, "ok");
+      assert.equal(health.json().version, "1.0.0-test");
+
+      // Em modo single-server (SERVE_FRONTEND=true), aceita Origin do mesmo Host (ex.: acesso pelo IP da LAN)
+      const sameHostCors = await app.inject({
+        method: "GET",
+        url: "/api/settings/public",
+        headers: {
+          host: "192.168.1.50:3333",
+          origin: "http://192.168.1.50:3333"
+        }
+      });
+      assert.equal(sameHostCors.headers["access-control-allow-origin"], "http://192.168.1.50:3333");
+
+      // Mas continua bloqueando origens externas arbitrárias
+      const externalCors = await app.inject({
+        method: "GET",
+        url: "/api/settings/public",
+        headers: {
+          host: "192.168.1.50:3333",
+          origin: "https://evil.example"
+        }
+      });
+      assert.equal(externalCors.headers["access-control-allow-origin"], undefined);
+
+      // Backup automático cria arquivo válido e mantém apenas os `retainCount` mais recentes
+      const b1 = runScheduledBackup(db, tmpBackupDir, 2);
+      assert.ok(fs.existsSync(b1.filePath));
+      await new Promise((r) => setTimeout(r, 15));
+      runScheduledBackup(db, tmpBackupDir, 2);
+      await new Promise((r) => setTimeout(r, 15));
+      const b3 = runScheduledBackup(db, tmpBackupDir, 2);
+      assert.equal(b3.pruned, 1);
+
+      const remaining = fs.readdirSync(tmpBackupDir).filter((f) => f.endsWith(".db"));
+      assert.equal(remaining.length, 2);
+    } finally {
+      fs.rmSync(tmpBackupDir, { recursive: true, force: true });
+    }
   });
 });

@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
+import { requireAdmin } from "../security/auth.js";
 import { createUserSchema, updateUserSchema } from "../schemas/index.js";
 import { BadRequestError } from "../services/errors.js";
 import { createUser, listUsers, revokeUserSessions, updateUser } from "../services/users.service.js";
@@ -13,13 +14,13 @@ export function registerUserRoutes(
     return { items: listUsers(db) };
   });
 
-  app.post("/api/users", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.post("/api/users", { preHandler: [requireAuth, requireAdmin] }, async (request, reply) => {
     const input = createUserSchema.parse(request.body);
     const item = createUser(db, input, request.currentUser!, request.ip);
     return reply.code(201).send({ item });
   });
 
-  app.patch("/api/users/:id", { preHandler: [requireAuth] }, async (request) => {
+  app.patch("/api/users/:id", { preHandler: [requireAuth, requireAdmin] }, async (request) => {
     const id = Number((request.params as { id: string }).id);
     if (!Number.isInteger(id) || id <= 0) {
       throw new BadRequestError("ID inválido.");
@@ -29,7 +30,7 @@ export function registerUserRoutes(
     return { item };
   });
 
-  app.post("/api/users/:id/revoke-sessions", { preHandler: [requireAuth] }, async (request) => {
+  app.post("/api/users/:id/revoke-sessions", { preHandler: [requireAuth, requireAdmin] }, async (request) => {
     const id = Number((request.params as { id: string }).id);
     if (!Number.isInteger(id) || id <= 0) {
       throw new BadRequestError("ID inválido.");

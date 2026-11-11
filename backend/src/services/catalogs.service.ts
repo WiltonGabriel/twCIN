@@ -13,6 +13,35 @@ function assertSectorExists(db: DatabaseSync, sectorId: number | null | undefine
   }
 }
 
+function resolveOriginFields(
+  db: DatabaseSync,
+  originSectorId: number | null | undefined,
+  originText: string | undefined,
+  fallbackSectorId: number | null,
+  fallbackOrigin: string
+): { originSectorId: number | null; origin: string } {
+  if (originSectorId !== undefined) {
+    if (originSectorId === null) {
+      return {
+        originSectorId: null,
+        origin: originText !== undefined ? originText.trim() : fallbackOrigin
+      };
+    }
+    const sector = db.prepare("SELECT id, name FROM catalog_sectors WHERE id = ?").get(originSectorId) as
+      | { id: number; name: string }
+      | undefined;
+    if (!sector) {
+      throw new BadRequestError("Setor informado não existe.");
+    }
+    const trimmed = originText !== undefined ? originText.trim() : "";
+    return { originSectorId: sector.id, origin: trimmed || sector.name };
+  }
+  return {
+    originSectorId: fallbackSectorId,
+    origin: originText !== undefined ? originText.trim() : fallbackOrigin
+  };
+}
+
 export type EquipmentOwnership = "proprio_ti" | "estoque" | "terceiro";
 export type EquipmentCondition =
   | "disponivel"
@@ -31,8 +60,10 @@ export interface CatalogEquipmentRow {
   category: string;
   ownership_type: EquipmentOwnership;
   condition_status: EquipmentCondition;
+  origin_sector_id: number | null;
   origin: string;
   received_from: string;
+  received_at: string | null;
   reason: string;
   notes: string;
   active: number;
@@ -106,8 +137,10 @@ export function createCatalogEquipment(
     category?: string;
     ownership_type?: EquipmentOwnership;
     condition_status?: EquipmentCondition;
+    origin_sector_id?: number | null;
     origin?: string;
     received_from?: string;
+    received_at?: string;
     reason?: string;
     notes?: string;
   },
@@ -121,11 +154,14 @@ export function createCatalogEquipment(
   }
 
   const now = new Date().toISOString();
+  const receivedAt = input.received_at || now;
   const pat = input.patrimony?.trim() || null;
 
   if (input.condition_status === "emprestado" || input.condition_status === "devolvido_dono") {
     throw new BadRequestError("Essa situação é definida por uma movimentação ou pela devolução ao dono.");
   }
+
+  const resolvedOrigin = resolveOriginFields(db, input.origin_sector_id, input.origin, null, "");
 
   if (pat) {
     const dup = db.prepare("SELECT id FROM catalog_equipments WHERE LOWER(patrimony) = LOWER(?)").get(pat);
@@ -138,9 +174,9 @@ export function createCatalogEquipment(
     const info = db.prepare(`
       INSERT INTO catalog_equipments (
         client_uuid, name, patrimony, category, ownership_type, condition_status,
-        origin, received_from, reason, notes, active, version,
+        origin_sector_id, origin, received_from, received_at, reason, notes, active, version,
         created_by_id, created_by_name, updated_by_id, updated_by_name, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?)
     `).run(
       clientUuid,
       input.name.trim(),
@@ -148,8 +184,10 @@ export function createCatalogEquipment(
       input.category?.trim() || "",
       input.ownership_type || "proprio_ti",
       input.condition_status || "disponivel",
-      input.origin?.trim() || "",
+      resolvedOrigin.originSectorId,
+      resolvedOrigin.origin,
       input.received_from?.trim() || "",
+      receivedAt,
       input.reason?.trim() || "",
       input.notes?.trim() || "",
       actor.id,
@@ -186,8 +224,10 @@ export function updateCatalogEquipment(
     category?: string;
     ownership_type?: EquipmentOwnership;
     condition_status?: EquipmentCondition;
+    origin_sector_id?: number | null;
     origin?: string;
     received_from?: string;
+    received_at?: string;
     reason?: string;
     notes?: string;
     active?: boolean;
@@ -232,6 +272,19 @@ export function updateCatalogEquipment(
     );
   }
 
+  const nextReceivedAt = input.received_at ?? current.received_at ?? current.created_at;
+  if (current.owner_returned_at && new Date(nextReceivedAt).getTime() > new Date(current.owner_returned_at).getTime()) {
+    throw new BadRequestError("A data de recebimento não pode ser posterior à devolução ao dono.");
+  }
+
+  const resolvedOrigin = resolveOriginFields(
+    db,
+    input.origin_sector_id,
+    input.origin,
+    current.origin_sector_id,
+    current.origin
+  );
+
   const nextPat = input.patrimony !== undefined ? input.patrimony.trim() || null : current.patrimony;
   if (nextPat) {
     const dup = db
@@ -251,8 +304,10 @@ export function updateCatalogEquipment(
         category = ?,
         ownership_type = ?,
         condition_status = ?,
+        origin_sector_id = ?,
         origin = ?,
         received_from = ?,
+        received_at = ?,
         reason = ?,
         notes = ?,
         active = ?,
@@ -267,8 +322,10 @@ export function updateCatalogEquipment(
       input.category !== undefined ? input.category.trim() : current.category,
       input.ownership_type !== undefined ? input.ownership_type : current.ownership_type,
       input.condition_status !== undefined ? input.condition_status : current.condition_status,
-      input.origin !== undefined ? input.origin.trim() : current.origin,
+      resolvedOrigin.originSectorId,
+      resolvedOrigin.origin,
       input.received_from !== undefined ? input.received_from.trim() : current.received_from,
+      nextReceivedAt,
       input.reason !== undefined ? input.reason.trim() : current.reason,
       input.notes !== undefined ? input.notes.trim() : current.notes,
       input.active !== undefined ? (input.active ? 1 : 0) : current.active,
@@ -331,8 +388,9 @@ export function returnEquipmentToOwner(
 
   const now = new Date().toISOString();
   const returnedAt = input.returned_at || now;
-  if (new Date(returnedAt).getTime() < new Date(current.created_at).getTime()) {
-    throw new BadRequestError("A data de devolução ao dono não pode ser anterior ao cadastro do equipamento.");
+  const baselineDate = current.received_at || current.created_at;
+  if (new Date(returnedAt).getTime() < new Date(baselineDate).getTime()) {
+    throw new BadRequestError("A data de devolução ao dono não pode ser anterior ao recebimento na TI.");
   }
   const notes = input.notes?.trim()
     ? [current.notes, `Devolução ao dono: ${input.notes.trim()}`].filter(Boolean).join("\n")
@@ -650,6 +708,8 @@ export function getSuggestions(db: DatabaseSync): SuggestionsPayload {
       SELECT DISTINCT received_by AS name FROM movements WHERE received_by != ''
       UNION
       SELECT DISTINCT received_from AS name FROM catalog_equipments WHERE received_from != ''
+      UNION
+      SELECT DISTINCT owner_received_by AS name FROM catalog_equipments WHERE owner_received_by != ''
     `)
     .all() as Array<{ name: string }>;
   for (const row of peopleRows) {

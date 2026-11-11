@@ -12,6 +12,7 @@ export type AuditAction =
   | "RETURN"
   | "RETURN_TO_OWNER"
   | "BACKUP"
+  | "RESTORE"
   | "SYNC_CONFLICT";
 
 export interface AuditEntry {

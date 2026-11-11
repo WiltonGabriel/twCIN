@@ -20,8 +20,38 @@ function ensureColumn(
  * dentro de uma transação, e fica registrada em `schema_migrations`.
  */
 const MIGRATIONS: Array<{ version: number; name: string; up: (db: DatabaseSync) => void }> = [
-  { version: 1, name: "esquema-base", up: applyBaselineSchema }
+  { version: 1, name: "esquema-base", up: applyBaselineSchema },
+  { version: 2, name: "perfis-usuario", up: addUserRoleMigration },
+  { version: 3, name: "setor-origem-recebimento", up: addEquipmentOriginAndReceivedAtMigration }
 ];
+
+function addUserRoleMigration(db: DatabaseSync): void {
+  ensureColumn(db, "users", "role", "TEXT NOT NULL DEFAULT 'admin'");
+}
+
+function addEquipmentOriginAndReceivedAtMigration(db: DatabaseSync): void {
+  ensureColumn(db, "catalog_equipments", "origin_sector_id", "INTEGER REFERENCES catalog_sectors(id) ON DELETE SET NULL");
+  ensureColumn(db, "catalog_equipments", "received_at", "TEXT");
+
+  db.exec(`
+    UPDATE catalog_equipments
+    SET received_at = created_at
+    WHERE received_at IS NULL;
+
+    UPDATE catalog_equipments
+    SET origin_sector_id = (
+      SELECT s.id
+      FROM catalog_sectors s
+      WHERE LOWER(TRIM(s.name)) = LOWER(TRIM(catalog_equipments.origin))
+         OR (TRIM(catalog_equipments.origin) = '' AND LOWER(TRIM(s.name)) = LOWER(TRIM(catalog_equipments.received_from)))
+      LIMIT 1
+    )
+    WHERE origin_sector_id IS NULL
+      AND (TRIM(origin) != '' OR TRIM(received_from) != '');
+
+    CREATE INDEX IF NOT EXISTS idx_equip_origin_sector ON catalog_equipments(origin_sector_id);
+  `);
+}
 
 export function runMigrations(db: DatabaseSync): void {
   db.exec(`
@@ -65,6 +95,7 @@ function applyBaselineSchema(db: DatabaseSync): void {
       username TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
       active INTEGER NOT NULL DEFAULT 1,
+      role TEXT NOT NULL DEFAULT 'admin',
       must_change_password INTEGER NOT NULL DEFAULT 0,
       token_version INTEGER NOT NULL DEFAULT 1,
       last_login_at TEXT,
@@ -87,8 +118,10 @@ function applyBaselineSchema(db: DatabaseSync): void {
       category TEXT NOT NULL DEFAULT '',
       ownership_type TEXT NOT NULL DEFAULT 'proprio_ti',
       condition_status TEXT NOT NULL DEFAULT 'disponivel',
+      origin_sector_id INTEGER REFERENCES catalog_sectors(id) ON DELETE SET NULL,
       origin TEXT NOT NULL DEFAULT '',
       received_from TEXT NOT NULL DEFAULT '',
+      received_at TEXT,
       reason TEXT NOT NULL DEFAULT '',
       notes TEXT NOT NULL DEFAULT '',
       active INTEGER NOT NULL DEFAULT 1,
@@ -188,6 +221,8 @@ function applyBaselineSchema(db: DatabaseSync): void {
 
   // Prazo de devolução (empréstimos) e devolução de equipamento de terceiro ao dono.
   ensureColumn(db, "movements", "due_at", "TEXT");
+  ensureColumn(db, "catalog_equipments", "origin_sector_id", "INTEGER REFERENCES catalog_sectors(id) ON DELETE SET NULL");
+  ensureColumn(db, "catalog_equipments", "received_at", "TEXT");
   ensureColumn(db, "catalog_equipments", "owner_returned_at", "TEXT");
   ensureColumn(db, "catalog_equipments", "owner_received_by", "TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "catalog_equipments", "owner_returned_by_name", "TEXT NOT NULL DEFAULT ''");
@@ -203,5 +238,6 @@ function applyBaselineSchema(db: DatabaseSync): void {
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_equip_client_uuid ON catalog_equipments(client_uuid);
     CREATE INDEX IF NOT EXISTS idx_equip_condition ON catalog_equipments(condition_status, ownership_type);
+    CREATE INDEX IF NOT EXISTS idx_equip_origin_sector ON catalog_equipments(origin_sector_id);
   `);
 }

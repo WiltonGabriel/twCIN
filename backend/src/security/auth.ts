@@ -6,10 +6,13 @@ import { jwtVerify, SignJWT } from "jose";
 export const SESSION_COOKIE_NAME = "twcin_session";
 export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
 
+export type UserRole = "admin" | "tecnico";
+
 export interface AuthUser {
   id: number;
   username: string;
   full_name: string;
+  role: UserRole;
   must_change_password: boolean;
   last_login_at: string | null;
   token_version: number;
@@ -116,7 +119,7 @@ export function createAuthGuard(
 
     const dbUser = db
       .prepare(`
-        SELECT id, username, full_name, active, must_change_password, token_version, last_login_at
+        SELECT id, username, full_name, role, active, must_change_password, token_version, last_login_at
         FROM users WHERE id = ?
       `)
       .get(decoded.id) as
@@ -124,6 +127,7 @@ export function createAuthGuard(
           id: number;
           username: string;
           full_name: string;
+          role: string;
           active: number;
           must_change_password: number;
           token_version: number;
@@ -149,9 +153,16 @@ export function createAuthGuard(
       id: dbUser.id,
       username: dbUser.username,
       full_name: dbUser.full_name,
+      role: dbUser.role === "tecnico" ? "tecnico" : "admin",
       must_change_password: dbUser.must_change_password === 1,
       last_login_at: dbUser.last_login_at,
       token_version: dbUser.token_version
     };
   };
+}
+
+export async function requireAdmin(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  if (request.currentUser?.role !== "admin") {
+    reply.code(403).send({ error: "Ação permitida apenas para administradores." });
+  }
 }

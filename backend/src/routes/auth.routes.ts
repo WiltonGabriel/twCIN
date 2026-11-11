@@ -29,6 +29,7 @@ function toPublicAuthUser(user: AuthUser) {
     id: user.id,
     username: user.username,
     full_name: user.full_name,
+    role: user.role,
     must_change_password: user.must_change_password,
     last_login_at: user.last_login_at
   };
@@ -65,8 +66,8 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): v
 
         const info = db.prepare(`
           INSERT INTO users (
-            full_name, username, password_hash, active, must_change_password, token_version, last_login_at, password_changed_at, created_at, updated_at
-          ) VALUES (?, ?, ?, 1, 0, 1, ?, ?, ?, ?)
+            full_name, username, password_hash, active, role, must_change_password, token_version, last_login_at, password_changed_at, created_at, updated_at
+          ) VALUES (?, ?, ?, 1, 'admin', 0, 1, ?, ?, ?, ?)
         `).run(parsed.full_name.trim(), normalizedUsername, hashPassword(parsed.password), now, now, now, now);
 
         const upsertSetting = db.prepare(`
@@ -95,6 +96,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): v
           id: userId,
           username: normalizedUsername,
           full_name: parsed.full_name.trim(),
+          role: "admin",
           must_change_password: false,
           last_login_at: now,
           token_version: 1
@@ -123,7 +125,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): v
       const username = parsed.username.toLowerCase();
       const row = db
         .prepare(`
-          SELECT id, full_name, username, password_hash, active, must_change_password, token_version, last_login_at
+          SELECT id, full_name, username, role, password_hash, active, must_change_password, token_version, last_login_at
           FROM users WHERE LOWER(username) = ?
         `)
         .get(username) as
@@ -131,6 +133,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): v
             id: number;
             full_name: string;
             username: string;
+            role: string;
             password_hash: string;
             active: number;
             must_change_password: number;
@@ -175,6 +178,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): v
         id: row.id,
         username: row.username,
         full_name: row.full_name,
+        role: row.role === "tecnico" ? "tecnico" : "admin",
         must_change_password: row.must_change_password === 1,
         last_login_at: now,
         token_version: row.token_version

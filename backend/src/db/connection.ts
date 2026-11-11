@@ -11,6 +11,7 @@ export function openDatabase(dbPath: string): DatabaseSync {
   const db = new DatabaseSync(dbPath);
   if (dbPath !== ":memory:") {
     db.exec("PRAGMA journal_mode = WAL;");
+    db.exec("PRAGMA synchronous = FULL;");
   }
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec("PRAGMA busy_timeout = 5000;");

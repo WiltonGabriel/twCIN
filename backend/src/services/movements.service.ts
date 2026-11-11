@@ -9,6 +9,7 @@ import {
   findOpenMovement,
   setEquipmentConditionFromMovement
 } from "./equipmentState.js";
+import { findEquipmentByIdOrUuid } from "./catalogs.service.js";
 import { BadRequestError, ConflictError, NotFoundError } from "./errors.js";
 import { getPublicSettings } from "./settings.service.js";
 
@@ -45,6 +46,7 @@ export interface CreateMovementInput {
   client_uuid?: string;
   movement_type?: MovementType;
   equipment_id?: number | null;
+  equipment_client_uuid?: string | null;
   equipment_name: string;
   patrimony?: string;
   sector_id?: number | null;
@@ -59,6 +61,7 @@ export interface CreateMovementInput {
 export interface UpdateMovementInput {
   movement_type?: MovementType;
   equipment_id?: number | null;
+  equipment_client_uuid?: string | null;
   equipment_name?: string;
   patrimony?: string;
   sector_id?: number | null;
@@ -86,6 +89,20 @@ const ALLOWED_STATUSES: Record<MovementType, MovementStatus[]> = {
 
 const OPEN_STATUSES: MovementStatus[] = ["ativo", "fixo"];
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+function resolveEquipmentId(
+  db: DatabaseSync,
+  equipmentId: number | null | undefined,
+  equipmentClientUuid: string | null | undefined
+): number | null | undefined {
+  if (equipmentId !== undefined && equipmentId !== null) return equipmentId;
+  if (!equipmentClientUuid) return equipmentId;
+  const found = findEquipmentByIdOrUuid(db, undefined, equipmentClientUuid);
+  if (!found) {
+    throw new BadRequestError("Equipamento informado não existe.");
+  }
+  return found.id;
+}
 
 function assertSectorExists(db: DatabaseSync, sectorId: number | null | undefined): void {
   if (sectorId === null || sectorId === undefined) return;
@@ -236,7 +253,8 @@ export function createMovement(
 
   return withTransaction(db, () => {
     assertSectorExists(db, input.sector_id);
-    const equipment = assertEquipmentAvailable(db, input.equipment_id);
+    const resolvedEquipmentId = resolveEquipmentId(db, input.equipment_id, input.equipment_client_uuid);
+    const equipment = assertEquipmentAvailable(db, resolvedEquipmentId);
     const patrimony = input.patrimony?.trim() || equipment?.patrimony || "";
 
     let dueAt: string | null = null;
@@ -257,7 +275,7 @@ export function createMovement(
       clientUuid,
       documentCode,
       movementType,
-      input.equipment_id ?? null,
+      resolvedEquipmentId ?? null,
       input.equipment_name.trim(),
       patrimony,
       input.sector_id ?? null,
@@ -379,14 +397,19 @@ export function updateMovement(
   }
   assertDueAfterOut(nextOutAt, nextDueAt);
 
-  const nextEquipmentId = input.equipment_id !== undefined ? input.equipment_id : current.equipment_id;
   const nextSectorId = input.sector_id !== undefined ? input.sector_id : current.sector_id;
-  const equipmentChanged = nextEquipmentId !== current.equipment_id;
   const wasOpen = OPEN_STATUSES.includes(current.status);
   const isOpen = OPEN_STATUSES.includes(nextStatus);
   const reopening = isOpen && !wasOpen;
 
   return withTransaction(db, () => {
+    const resolvedInputEquipmentId =
+      input.equipment_id !== undefined || input.equipment_client_uuid !== undefined
+        ? resolveEquipmentId(db, input.equipment_id, input.equipment_client_uuid)
+        : undefined;
+    const nextEquipmentId = resolvedInputEquipmentId !== undefined ? resolvedInputEquipmentId : current.equipment_id;
+    const equipmentChanged = nextEquipmentId !== current.equipment_id;
+
     if (nextSectorId !== current.sector_id) {
       assertSectorExists(db, nextSectorId);
     }
