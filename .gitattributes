@@ -1,0 +1,22 @@
+# Padroniza quebras de linha entre Windows e Linux.
+* text=auto eol=lf
+
+# Scripts shell precisam obrigatoriamente de LF para executar no Linux.
+*.sh text eol=lf
+
+# Scripts Windows Batch e PowerShell usam CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Arquivos binários.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.db binary
+*.zip binary
+*.gz binary

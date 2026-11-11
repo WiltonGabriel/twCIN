@@ -1,0 +1,67 @@
+name: Relato de bug
+description: Informe um erro encontrado na aplicação, sincronização offline ou deploy.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Obrigado por ajudar a melhorar o **twCIN**. Descreva o problema com o máximo de contexto possível.
+        > Se for uma falha de segurança, **não abra Issue pública** — veja as instruções em `SECURITY.md`.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: O que aconteceu?
+      description: Explique claramente qual erro ocorreu.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Como reproduzir
+      description: Passos exatos para reproduzir o problema.
+      placeholder: |
+        1. Acesse a aba...
+        2. Clique em...
+        3. Veja o erro...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Comportamento esperado
+    validations:
+      required: false
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Ambiente de execução
+      options:
+        - Docker / Docker Compose (Linux)
+        - Windows Server (Serviço WinSW)
+        - Windows (Modo portátil - iniciar-twcin.bat)
+        - Linux (Serviço systemd)
+        - Linux (Modo portátil - iniciar-twcin.sh)
+        - Desenvolvimento local (npm run dev)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Versão / Tag (ex. v1.0.0)
+      placeholder: v1.0.0
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs ou print (sem dados sensíveis)
+      render: text
+    validations:
+      required: false

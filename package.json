@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "description": "Sistema interno offline-first de controle de equipamentos, movimentações, empréstimos e auditoria de TI",
+  "engines": {
+    "node": ">=24.0.0",
+    "npm": ">=10.0.0"
+  },
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "npm --prefix backend run build && npm --prefix frontend run build",

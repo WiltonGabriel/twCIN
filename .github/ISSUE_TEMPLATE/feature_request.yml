@@ -1,0 +1,26 @@
+name: Sugestão de melhoria
+description: Proponha uma nova funcionalidade ou ajuste de fluxo no twCIN.
+title: "[Sugestão]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Qual necessidade ou problema essa melhoria resolve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Como você imagina a solução?
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Contexto adicional
+      description: Capturas, exemplos de uso no setor de TI ou restrições offline.
+    validations:
+      required: false

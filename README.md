@@ -17,12 +17,12 @@ O **twCIN** oferece à equipe de TI um ambiente único para controlar equipament
 ## Principais recursos
 
 - **Visão rápida (`Início`):** busca unificada (inclusive em itens devolvidos ao dono), empréstimos atrasados e vencendo, equipamentos em manutenção/avaliação, o que está emprestado agora e aba **Indicadores**.
-- **Gestão de equipamentos e custódia (`Equipamentos`):** distingue itens próprios, estoque e equipamentos de terceiros/setores com vínculo opcional/obrigatório ao setor de origem (`origin_sector_id`), data real de recebimento (`received_at`), fluxo **Devolver ao dono**, filtro exclusivo **Devolvidos ao dono** e **Comprovante PDF** individual com assinaturas.
+- **Gestão de equipamentos e custódia (`Equipamentos`):** distingue itens próprios, estoque e equipamentos de terceiros/setores com vínculo opcional/obrigatório ao setor de origem (`origin_sector_id`), catálogo gerenciável de **Categorias** (com busca, criação rápida e filtro dedicado), data real de recebimento (`received_at`), fluxo **Devolver ao dono**, filtro exclusivo **Devolvidos ao dono** e **Comprovante PDF** individual com assinaturas.
 - **Dossiê unificado por setor (`Por Setor`):** selecione um setor (ex.: *Recursos Didáticos*) e veja em uma tela o que está com ele agora, o que ele trouxe para conserto, o que já devolvemos ao setor e o histórico/doações, com filtro de período e **Imprimir dossiê PDF**.
 - **Movimentações com regras (`Movimentações`):** código sequencial `MOV-XXXX`, prazo configurável, filtro por setor também na aba **Em aberto**, histórico completo, devoluções e termo PDF com assinatura.
 - **Auditoria e backups:** trilha imutável em `audit_logs`, exportação de planilhas CSV, backup/restauração atômica `.db` pela interface (inclusive no setup inicial de novos servidores) e **backup automático em disco** com retenção configurável.
 - **PWA offline-first e identidade visual:** cache `IndexedDB` (Dexie), fila offline por usuário com resolução de conflitos, personalização de paletas, imagem de fundo, logo sincronizada com o favicon da aba e editor/recortador de imagens com conversão para WebP e download.
-- **Pronto para servidor:** encerramento gracioso (`SIGTERM`/`SIGINT`), healthcheck SQLite em `/api/health`, suporte a Docker não-privilegiado, pacote portátil + Serviço nativo para Windows Server e serviço `systemd` para Linux.
+- **Pronto para servidor:** encerramento gracioso (`SIGTERM`/`SIGINT`), healthcheck SQLite em `/api/health`, suporte a Docker não-privilegiado, pacote portátil com fallback automático de porta, Serviço nativo para Windows Server (com painel de gerenciamento rápido `gerenciar-servico.bat`) e serviço `systemd` para Linux.
 
 ---
 
@@ -52,22 +52,23 @@ tar -xzf twcin-vX.Y.Z-linux-x64.tar.gz
 cd twcin-vX.Y.Z-linux-x64
 ```
 
-2. **Para testar na hora:** execute `./iniciar-twcin.sh`.
-3. **Para rodar sempre como serviço (`systemd`):** execute `sudo ./instalar-linux.sh` (programa em `/opt/twcin`, dados em `/var/lib/twcin`).
+2. **Para testar na hora:** execute `./iniciar-twcin.sh` (escolhe automaticamente a próxima porta livre se `3333` já estiver ocupada).
+3. **Para rodar sempre como serviço (`systemd`):** execute `sudo ./instalar-linux.sh` (programa em `/opt/twcin`, dados e `twcin.env` em `/var/lib/twcin`; use `TWCIN_PORT=3400 sudo -E ./instalar-linux.sh` se precisar mudar a porta) e gerencie com `sudo systemctl stop|restart|status twcin`.
 
 ### 3. Windows / Windows Server (sem Docker)
 
 1. Baixe **`twcin-vX.Y.Z-win-x64.zip`** na página de **Releases** e extraia em uma pasta (o pacote já traz o runtime Node.js e o wrapper de serviço embutidos).
-2. **Para testar na hora (portátil):** dê dois cliques em **`iniciar-twcin.bat`** e acesse **`http://localhost:3333`**.
+2. **Para testar na hora (portátil):** dê dois cliques em **`iniciar-twcin.bat`** e acesse a URL exibida no console (padrão **`http://localhost:3333`**; se estiver ocupada, sobe automaticamente na próxima porta livre).
 3. **Para rodar sempre como Serviço do Windows Server:** abra o PowerShell **como Administrador** dentro da pasta extraída e execute:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\instalar-servico.ps1
 ```
 
-- Programa instalado em `C:\Program Files\twCIN` e dados/backups isolados em `C:\ProgramData\twCIN`.
-- Adicione `-OpenFirewall` se quiser liberar automaticamente a porta TCP `3333` na rede privada/domínio.
-- Para atualizar no futuro sem perder o banco, extraia o novo `.zip` e rode `instalar-servico.ps1` novamente.
+- Programa instalado em `C:\Program Files\twCIN` e dados/backups/configuração (`twcin.env`) isolados em `C:\ProgramData\twCIN`.
+- Adicione `-OpenFirewall` para liberar a porta na rede privada/domínio e use `-Port 3400` se a porta `3333` já estiver em uso no servidor (o instalador verifica antes de registrar).
+- **Para parar, iniciar ou reiniciar em 1 clique:** dê dois cliques em **`gerenciar-servico.bat`** (ou use `services.msc` / `Stop-Service twCIN`).
+- Para atualizar no futuro sem perder o banco nem a porta configurada, extraia o novo `.zip` e rode `instalar-servico.ps1` novamente.
 
 ---
 
@@ -147,6 +148,8 @@ twCIN/
 - **Referência da API:** [docs/API.md](docs/API.md)
 - **Notas de versão:** [CHANGELOG.md](CHANGELOG.md)
 - **Diretrizes de contribuição:** [CONTRIBUTING.md](CONTRIBUTING.md)
+- **Política de segurança:** [SECURITY.md](SECURITY.md)
+- **Código de conduta:** [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 
 ## Mantenedores e licença
 

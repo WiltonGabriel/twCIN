@@ -2,6 +2,23 @@
 
 Todas as mudanças notáveis do **twCIN** são documentadas neste arquivo, seguindo [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [Não publicado]
+
+### Adicionado
+
+- **Catálogo gerenciável de categorias (`Configurações → Cadastros` e `Equipamentos`):**
+  - Nova tabela `catalog_categories` com endpoints dedicados (`GET/POST/PATCH /api/catalogs/categories`), sugestões unificadas e suporte à criação offline (`category.create` em `/api/sync`).
+  - Seletor unificado com busca, autocompletar, criação rápida e filtro por categoria na tela de **Equipamentos**, propagando renomeações para os equipamentos vinculados.
+- **Gerenciamento rápido de serviço e governança do repositório:**
+  - Script interativo [`deploy/windows/gerenciar-servico.bat`](deploy/windows/gerenciar-servico.bat) para parar, iniciar, reiniciar, abrir logs ou abrir o navegador com 1 clique no Windows Server.
+  - Política de segurança (`SECURITY.md`), código de conduta (`CODE_OF_CONDUCT.md`), templates de Issue/PR, `dependabot.yml`, `.gitattributes`, `.editorconfig`, `.nvmrc` e restrição `engines` (`Node.js >= 24`).
+
+### Alterado
+
+- **Política empresarial de porta (`PORT_AUTO_FALLBACK`):**
+  - Serviços (`WinSW`, `systemd` e Docker) usam `twcin.env` como fonte única de porta (preservada em atualizações), falham rápido com diagnóstico claro em `EADDRINUSE` e validam portas ocupadas antes da instalação (`-Port` no Windows, `TWCIN_PORT` no Linux).
+  - Inicializações portáteis (`iniciar-twcin.bat` e `iniciar-twcin.sh`) habilitam `PORT_AUTO_FALLBACK=true` para subir automaticamente na próxima porta livre caso a padrão esteja em uso.
+
 ## [1.0.0] - 2026-11-10
 
 ### Principais recursos

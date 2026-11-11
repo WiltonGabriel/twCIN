@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Política de Segurança (não abra Issue pública)
+    url: https://github.com/WiltonGabriel/twCIN/blob/main/SECURITY.md
+    about: Instruções para relatar falhas de segurança em privado.
+  - name: Guia de Implantação em Servidor
+    url: https://github.com/WiltonGabriel/twCIN/blob/main/docs/DEPLOY.md
+    about: Consulte antes de abrir dúvida sobre Docker, Windows Server ou Linux.
