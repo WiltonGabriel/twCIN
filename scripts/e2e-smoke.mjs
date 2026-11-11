@@ -81,7 +81,7 @@ class CdpClient {
     return res.result?.value;
   }
 
-  async waitFor(fnExpr, timeoutMs = 10000) {
+  async waitFor(fnExpr, timeoutMs = 20000) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       const ok = await this.eval(`Boolean(${fnExpr})`);
@@ -147,8 +147,15 @@ try {
     [
       "--headless=new",
       "--no-sandbox",
+      "--disable-setuid-sandbox",
       "--disable-gpu",
       "--disable-dev-shm-usage",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-background-networking",
+      "--disable-extensions",
+      "--disable-sync",
+      "--mute-audio",
       "--window-size=1280,900",
       "--remote-debugging-port=0",
       `--user-data-dir=${chromeProfile}`,
@@ -157,16 +164,46 @@ try {
     { stdio: ["ignore", "pipe", "pipe"] }
   );
 
+  let chromeStderr = "";
   const debugPort = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Chrome não abriu porta DevTools.")), 10000);
     const activePortFile = path.join(chromeProfile, "DevToolsActivePort");
+    let settled = false;
+    const finish = (portNum) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearInterval(poll);
+      resolve(portNum);
+    };
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearInterval(poll);
+      reject(err);
+    };
+
+    const timer = setTimeout(() => {
+      fail(new Error(`Chrome não abriu porta DevTools em 30s. stderr: ${chromeStderr.slice(-600)}`));
+    }, 30000);
+
+    chrome.stderr?.on("data", (chunk) => {
+      chromeStderr += String(chunk);
+      const match = chromeStderr.match(/DevTools listening on ws:\/\/[^:]+:(\d+)\//);
+      if (match && Number(match[1]) > 0) {
+        finish(Number(match[1]));
+      }
+    });
+
+    chrome.once("exit", (code, signal) => {
+      fail(new Error(`Chrome encerrou antes do DevTools abrir (code=${code}, signal=${signal}). stderr: ${chromeStderr.slice(-600)}`));
+    });
+
     const poll = setInterval(() => {
       if (fs.existsSync(activePortFile)) {
         const firstLine = fs.readFileSync(activePortFile, "utf8").split(/\r?\n/)[0]?.trim();
         if (firstLine && Number(firstLine) > 0) {
-          clearTimeout(timer);
-          clearInterval(poll);
-          resolve(Number(firstLine));
+          finish(Number(firstLine));
         }
       }
     }, 80);

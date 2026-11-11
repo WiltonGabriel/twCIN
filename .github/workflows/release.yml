@@ -21,9 +21,9 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       tag: ${{ steps.meta.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -63,7 +63,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Ajustar versão nos manifestos
         run: node scripts/set-version.mjs "${{ needs.testar.outputs.version }}"
@@ -102,9 +102,9 @@ jobs:
     needs: testar
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -136,7 +136,7 @@ jobs:
       - name: Gerar ZIP para Windows Server
         run: node scripts/package-release.mjs --target win-x64 --runtime-dir _runtime
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: pacote-win-x64
           path: release/twcin-v*-win-x64.zip
@@ -145,9 +145,9 @@ jobs:
     needs: testar
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -164,7 +164,7 @@ jobs:
           cp "$(command -v node)" _runtime/bin/node
           node scripts/package-release.mjs --target linux-x64 --runtime-dir _runtime
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: pacote-linux-x64
           path: release/twcin-v*-linux-x64.tar.gz
@@ -175,9 +175,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: release-assets
           merge-multiple: true
