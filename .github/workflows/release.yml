@@ -231,7 +231,7 @@ jobs:
 
       - name: Publicar Release no GitHub
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.testar.outputs.tag }}
           name: "twCIN ${{ needs.testar.outputs.tag }}"
