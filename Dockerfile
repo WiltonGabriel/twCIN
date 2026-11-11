@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM node:24-alpine AS builder
+FROM node:26-alpine AS builder
 WORKDIR /build
 
 COPY package.json ./
@@ -14,7 +14,7 @@ COPY frontend ./frontend
 
 RUN npm run build && npm --prefix backend prune --omit=dev
 
-FROM node:24-alpine AS runtime
+FROM node:26-alpine AS runtime
 WORKDIR /app
 
 ARG APP_VERSION=1.0.0
