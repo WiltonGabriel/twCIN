@@ -25,9 +25,10 @@ No Windows PowerShell com restrição para scripts `.ps1`, use `npm.cmd run dev`
 Antes de abrir um pull request, garanta que a checagem de tipos, os testes automatizados e o build passem sem erros:
 
 ```bash
-npm --prefix backend run typecheck
+npm run typecheck
 npm test
 npm run build
+npm run test:e2e   # requer Chrome/Chromium/Edge instalado
 ```
 
 ## Diretrizes
